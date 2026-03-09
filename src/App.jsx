@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 
-const STORAGE_KEY = "vidvault_v3";
+const STORAGE_KEY = "vidvault_v2";
 const DB_NAME = "vidvault_files_v1";
 const STORE_NAME = "blobs";
 
