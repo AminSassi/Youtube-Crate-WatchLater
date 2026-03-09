@@ -1,18 +1,46 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 
-const STORAGE_KEY = "vidvault_v2";
+const STORAGE_KEY = "vidvault_v3";
+const DB_NAME = "vidvault_files_v1";
+const STORE_NAME = "blobs";
 
-const PRIORITIES = {
-  urgent:  { label: "Urgent",  color: "#ff4d6d", bg: "rgba(255,77,109,0.12)",  dot: "#ff4d6d" },
-  soon:    { label: "Soon",    color: "#ffb830", bg: "rgba(255,184,48,0.12)",   dot: "#ffb830" },
-  someday: { label: "Someday", color: "#4ade80", bg: "rgba(74,222,128,0.12)",   dot: "#4ade80" },
-  none:    { label: "None",    color: "#3a3a55", bg: "transparent",             dot: "#3a3a55" },
-};
+// ── IndexedDB helpers ──────────────────────────────────────────────────────
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE_NAME);
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function storeBlob(id, blob) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).put(blob, id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function getBlob(id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const req = tx.objectStore(STORE_NAME).get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function deleteBlob(id) {
+  const db = await openDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).delete(id);
+    tx.oncomplete = resolve;
+  });
+}
 
-const CATEGORY_COLORS = [
-  "#7c6af7","#f97316","#06b6d4","#ec4899","#84cc16","#f59e0b","#8b5cf6","#10b981"
-];
-
+// ── Video helpers ─────────────────────────────────────────────────────────
 function extractVideoId(url) {
   const patterns = [
     /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
@@ -21,7 +49,6 @@ function extractVideoId(url) {
   for (const p of patterns) { const m = url.match(p); if (m) return m[1]; }
   return null;
 }
-
 async function fetchOEmbed(videoId) {
   try {
     const res = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`);
@@ -29,12 +56,44 @@ async function fetchOEmbed(videoId) {
   } catch {}
   return { title: "YouTube Video", channel: "YouTube Channel" };
 }
+function generateThumbnail(file) {
+  return new Promise((resolve) => {
+    const vid = document.createElement("video");
+    const url = URL.createObjectURL(file);
+    vid.src = url; vid.muted = true;
+    vid.onloadedmetadata = () => { vid.currentTime = Math.min(1.5, vid.duration * 0.08); };
+    vid.onseeked = () => {
+      const c = document.createElement("canvas");
+      c.width = 320; c.height = 180;
+      c.getContext("2d").drawImage(vid, 0, 0, 320, 180);
+      resolve(c.toDataURL("image/jpeg", 0.75));
+      URL.revokeObjectURL(url);
+    };
+    vid.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    setTimeout(() => resolve(null), 5000); // safety timeout
+  });
+}
+function fmtSize(bytes) {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 
-// ── Icons ──────────────────────────────────────────────────────────────────
+// ── Priority / colors ─────────────────────────────────────────────────────
+const PRIORITIES = {
+  urgent:  { label: "Urgent",  color: "#ff4d6d", bg: "rgba(255,77,109,0.12)",  dot: "#ff4d6d" },
+  soon:    { label: "Soon",    color: "#ffb830", bg: "rgba(255,184,48,0.12)",   dot: "#ffb830" },
+  someday: { label: "Someday", color: "#4ade80", bg: "rgba(74,222,128,0.12)",   dot: "#4ade80" },
+  none:    { label: "None",    color: "#3a3a55", bg: "transparent",             dot: "#3a3a55" },
+};
+const CATEGORY_COLORS = [
+  "#7c6af7","#f97316","#06b6d4","#ec4899","#84cc16","#f59e0b","#8b5cf6","#10b981"
+];
+
+// ── Icons ─────────────────────────────────────────────────────────────────
 const Icon = ({ d, size = 14, stroke = 2 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round">
-    <path d={d} />
-  </svg>
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round"><path d={d}/></svg>
 );
 const TrashIcon  = () => <Icon d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" />;
 const SearchIcon = () => <Icon d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" size={15} />;
@@ -43,13 +102,14 @@ const TagIcon    = () => <Icon d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V
 const FolderIcon = () => <Icon d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" size={13} />;
 const SortIcon   = () => <Icon d="M3 6h18M7 12h10M11 18h2" size={14} />;
 const XIcon      = () => <Icon d="M18 6L6 18M6 6l12 12" size={11} stroke={2.5} />;
+const FilmIcon   = () => <Icon d="M15 10l4.553-2.069A1 1 0 0 1 21 8.845v6.31a1 1 0 0 1-1.447.914L15 14M3 8a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" size={15}/>;
 const CheckIcon  = () => (
   <svg width="9" height="7" viewBox="0 0 9 7" fill="none">
     <path d="M1 3.5L3.5 6L8 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
   </svg>
 );
-const PlayIcon = () => (
-  <svg width="26" height="26" viewBox="0 0 24 24" fill="white" opacity="0.9"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+const PlayIcon = ({ size = 26 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="white" opacity="0.9"><polygon points="5 3 19 12 5 21 5 3"/></svg>
 );
 const VaultIcon = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -58,7 +118,71 @@ const VaultIcon = () => (
   </svg>
 );
 
-// ── Main App ───────────────────────────────────────────────────────────────
+// ── Local Video Player Modal ───────────────────────────────────────────────
+function LocalPlayer({ video, onClose }) {
+  const [blobUrl, setBlobUrl] = useState(null);
+  const [err, setErr] = useState(false);
+
+  useEffect(() => {
+    let url;
+    getBlob(video.id).then(blob => {
+      if (!blob) { setErr(true); return; }
+      url = URL.createObjectURL(blob);
+      setBlobUrl(url);
+    }).catch(() => setErr(true));
+    return () => { if (url) URL.revokeObjectURL(url); };
+  }, [video.id]);
+
+  // close on backdrop click
+  const handleBackdrop = (e) => { if (e.target === e.currentTarget) onClose(); };
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div onClick={handleBackdrop} style={{
+      position:"fixed", inset:0, background:"rgba(0,0,0,.88)", zIndex:1000,
+      display:"flex", alignItems:"center", justifyContent:"center", padding:20
+    }}>
+      <div style={{ width:"100%", maxWidth:900, background:"#0f0f1a", borderRadius:20,
+        border:"1px solid #2a2a42", overflow:"hidden", boxShadow:"0 32px 80px rgba(0,0,0,.8)" }}>
+        {/* modal header */}
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+          padding:"14px 18px", borderBottom:"1px solid #141424" }}>
+          <div>
+            <div style={{ fontSize:13.5, fontWeight:600, color:"#d0d0e8" }}>{video.title}</div>
+            <div style={{ fontSize:11, color:"#50507a", marginTop:2 }}>{video.fileSize ? fmtSize(video.fileSize) : ""} · {video.fileMime || "video"}</div>
+          </div>
+          <button onClick={onClose} style={{ background:"#141424", border:"1px solid #1c1c2e",
+            borderRadius:8, padding:"6px 10px", color:"#8080a8", cursor:"pointer", display:"flex", alignItems:"center" }}>
+            <XIcon />
+          </button>
+        </div>
+        {/* player */}
+        <div style={{ background:"#000", aspectRatio:"16/9", display:"flex", alignItems:"center", justifyContent:"center" }}>
+          {err ? (
+            <div style={{ color:"#ff6b8a", fontSize:13, textAlign:"center", padding:30 }}>
+              File not found in storage.<br/>
+              <span style={{ color:"#50507a", fontSize:11.5 }}>The original file may have been removed from this browser.</span>
+            </div>
+          ) : blobUrl ? (
+            <video src={blobUrl} controls autoPlay style={{ width:"100%", height:"100%", objectFit:"contain" }} />
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:10, color:"#30304a" }}>
+              <div className="spinner" style={{ width:28, height:28, borderWidth:3 }} />
+              <span style={{ fontSize:12 }}>Loading…</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────
 export default function VideoVault() {
   const load = () => {
     try { const s = localStorage.getItem(STORAGE_KEY); return s ? JSON.parse(s) : { videos: [], categories: [] }; }
@@ -68,26 +192,27 @@ export default function VideoVault() {
   const [data, setData]           = useState(load);
   const [url, setUrl]             = useState("");
   const [loading, setLoading]     = useState(false);
+  const [fileLoading, setFileLoading] = useState(false);
   const [error, setError]         = useState("");
-  const [filter, setFilter]       = useState("all");         // watched filter
-  const [catFilter, setCatFilter] = useState("all");         // category filter
-  const [prioFilter, setPrioFilter] = useState("all");       // priority filter
+  const [filter, setFilter]       = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all"); // all | youtube | local
+  const [catFilter, setCatFilter] = useState("all");
+  const [prioFilter, setPrioFilter] = useState("all");
   const [search, setSearch]       = useState("");
   const [sortBy, setSortBy]       = useState("newest");
   const [showSort, setShowSort]   = useState(false);
-  const [editingCard, setEditingCard] = useState(null);      // videoId being edited
+  const [editingCard, setEditingCard] = useState(null);
   const [newCatName, setNewCatName]   = useState("");
   const [showCatInput, setShowCatInput] = useState(false);
-  const inputRef = useRef(null);
-  const sortRef  = useRef(null);
+  const [playerVideo, setPlayerVideo] = useState(null); // local video being played
+  const inputRef   = useRef(null);
+  const sortRef    = useRef(null);
+  const fileRef    = useRef(null);
 
   const videos     = data.videos;
   const categories = data.categories;
 
-  const save = (newData) => {
-    setData(newData);
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newData)); } catch {}
-  };
+  const save       = (newData) => { setData(newData); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newData)); } catch {} };
   const saveVideos = (vids) => save({ ...data, videos: vids });
   const saveCats   = (cats) => save({ ...data, categories: cats });
   const saveAll    = (vids, cats) => save({ videos: vids, categories: cats });
@@ -99,8 +224,8 @@ export default function VideoVault() {
     return () => document.removeEventListener("mousedown", close);
   }, []);
 
-  // ── Add video ────────────────────────────────────────────────────────────
-  const handleAdd = async () => {
+  // ── Add YouTube ───────────────────────────────────────────────────────────
+  const handleAddYT = async () => {
     setError("");
     const trimmed = url.trim();
     if (!trimmed) return;
@@ -111,7 +236,8 @@ export default function VideoVault() {
     try {
       const meta = await fetchOEmbed(videoId);
       const newVideo = {
-        id: videoId, title: meta.title, channel: meta.channel,
+        id: videoId, type: "youtube",
+        title: meta.title, channel: meta.channel,
         thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
         watched: false, priority: "none", categories: [], tags: [], note: "",
         addedAt: Date.now(),
@@ -120,6 +246,42 @@ export default function VideoVault() {
       setUrl("");
     } catch { setError("Couldn't fetch video info."); }
     setLoading(false);
+  };
+
+  // ── Add Local File ────────────────────────────────────────────────────────
+  const handleFileChange = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setError(""); setFileLoading(true);
+
+    const toAdd = [];
+    for (const file of files) {
+      const id = uid();
+      try {
+        await storeBlob(id, file);
+        const thumb = await generateThumbnail(file);
+        const cleanName = file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+        toAdd.push({
+          id, type: "local",
+          title: cleanName, channel: "Local File",
+          thumbnail: thumb,
+          fileSize: file.size,
+          fileMime: file.type || "video/mp4",
+          watched: false, priority: "none", categories: [], tags: [], note: "",
+          addedAt: Date.now(),
+        });
+      } catch { /* skip failed files */ }
+    }
+    if (toAdd.length) saveVideos([...toAdd.reverse(), ...videos]);
+    else setError("Couldn't read the selected file(s).");
+    setFileLoading(false);
+    e.target.value = "";
+  };
+
+  // ── Delete ────────────────────────────────────────────────────────────────
+  const handleDelete = (video) => {
+    if (video.type === "local") deleteBlob(video.id).catch(() => {});
+    saveVideos(videos.filter(v => v.id !== video.id));
   };
 
   // ── Category helpers ──────────────────────────────────────────────────────
@@ -156,11 +318,13 @@ export default function VideoVault() {
     saveVideos(videos.map(v => v.id === videoId ? { ...v, tags: v.tags.filter(t => t !== tag) } : v));
   };
 
-  // ── Filtered + sorted list ────────────────────────────────────────────────
+  // ── Filtered list ─────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let list = [...videos];
     if (filter === "watched")   list = list.filter(v => v.watched);
     if (filter === "unwatched") list = list.filter(v => !v.watched);
+    if (typeFilter === "youtube") list = list.filter(v => v.type === "youtube");
+    if (typeFilter === "local")   list = list.filter(v => v.type === "local");
     if (catFilter !== "all")    list = list.filter(v => v.categories.includes(catFilter));
     if (prioFilter !== "all")   list = list.filter(v => v.priority === prioFilter);
     if (search) {
@@ -176,15 +340,16 @@ export default function VideoVault() {
     if (sortBy === "oldest")   list.sort((a, b) => a.addedAt - b.addedAt);
     if (sortBy === "priority") list.sort((a, b) => ORDER[a.priority] - ORDER[b.priority]);
     if (sortBy === "title")    list.sort((a, b) => a.title.localeCompare(b.title));
-    if (sortBy === "channel")  list.sort((a, b) => a.channel.localeCompare(b.channel));
     return list;
-  }, [videos, filter, catFilter, prioFilter, search, sortBy]);
+  }, [videos, filter, typeFilter, catFilter, prioFilter, search, sortBy]);
 
-  const watchedCount = videos.filter(v => v.watched).length;
+  const watchedCount  = videos.filter(v => v.watched).length;
+  const localCount    = videos.filter(v => v.type === "local").length;
+  const youtubeCount  = videos.filter(v => v.type === "youtube").length;
 
   return (
     <div style={{ minHeight:"100vh", background:"#080810", color:"#e2e2f0",
-      fontFamily:"'DM Sans', system-ui, sans-serif", paddingBottom: 80 }}>
+      fontFamily:"'DM Sans', system-ui, sans-serif", paddingBottom:80 }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Cabinet+Grotesk:wght@700;800&display=swap');
         *{box-sizing:border-box;margin:0;padding:0;}
@@ -200,7 +365,7 @@ export default function VideoVault() {
         .thumb:hover .play-ov{opacity:1;}
         .cbody{padding:14px 15px 15px;}
         .ctitle{font-size:13px;font-weight:500;line-height:1.45;color:#d0d0e8;margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
-        .cchan{font-size:11px;color:#50507a;margin-bottom:11px;}
+        .cchan{font-size:11px;color:#50507a;margin-bottom:11px;display:flex;align-items:center;gap:5px;}
         .row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
         .wcheck{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-size:11.5px;color:#60608a;transition:color .15s;}
         .wcheck:hover{color:#9090b8;}.wcheck.on{color:#7c6af7;}
@@ -220,9 +385,12 @@ export default function VideoVault() {
         .filter-btn.on{background:#1a1a2e;border-color:#3a3a58;color:#d0d0f0;}
         .url-input{flex:1;background:#0f0f1a;border:1px solid #1c1c2e;border-radius:11px;padding:0 16px;height:46px;color:#d0d0e8;font-size:13.5px;font-family:inherit;outline:none;transition:border-color .2s;}
         .url-input::placeholder{color:#30304a;}.url-input:focus{border-color:#3a3a58;}
-        .add-btn{background:#7c6af7;color:white;border:none;border-radius:11px;padding:0 20px;height:46px;font-size:13.5px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all .18s;font-family:inherit;white-space:nowrap;flex-shrink:0;}
+        .add-btn{background:#7c6af7;color:white;border:none;border-radius:11px;padding:0 20px;height:46px;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all .18s;font-family:inherit;white-space:nowrap;flex-shrink:0;}
         .add-btn:hover:not(:disabled){background:#9080ff;transform:translateY(-1px);box-shadow:0 4px 20px rgba(124,106,247,.4);}
         .add-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;}
+        .file-btn{background:#141424;color:#8080a8;border:1px solid #1c1c2e;border-radius:11px;padding:0 16px;height:46px;font-size:13px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:7px;transition:all .18s;font-family:inherit;white-space:nowrap;flex-shrink:0;}
+        .file-btn:hover:not(:disabled){border-color:#3a3a58;color:#c0c0d8;background:#1a1a2e;}
+        .file-btn:disabled{opacity:.5;cursor:not-allowed;}
         .search-wrap{position:relative;flex:1;}
         .search-icon{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:#30304a;pointer-events:none;}
         .search-inp{width:100%;background:#0f0f1a;border:1px solid #1c1c2e;border-radius:9px;padding:0 12px 0 34px;height:36px;color:#d0d0e8;font-size:12.5px;font-family:inherit;outline:none;transition:border-color .2s;}
@@ -239,15 +407,21 @@ export default function VideoVault() {
         .prog-track{height:2px;background:#141424;border-radius:2px;overflow:hidden;margin-top:14px;}
         .prog-fill{height:100%;background:linear-gradient(90deg,#7c6af7,#a78bfa);border-radius:2px;transition:width .6s cubic-bezier(.4,0,.2,1);}
         .empty{grid-column:1/-1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;color:#30304a;gap:10px;text-align:center;}
-        .empty h3{font-size:15px;color:#50507a;font-weight:500;}.empty p{font-size:12.5px;color:#30304a;max-width:260px;line-height:1.6;}
+        .empty h3{font-size:15px;color:#50507a;font-weight:500;}.empty p{font-size:12.5px;color:#30304a;max-width:280px;line-height:1.6;}
         .tag-inp{background:none;border:none;outline:none;color:#9090b8;font-size:11px;font-family:inherit;width:80px;padding:2px 4px;}
         .tag-inp::placeholder{color:#2a2a40;}
+        .local-badge{display:inline-flex;align-items:center;gap:3px;background:#06b6d418;border:1px solid #06b6d433;border-radius:4px;padding:1px 6px;font-size:9.5px;font-weight:600;color:#06b6d4;letter-spacing:.3px;text-transform:uppercase;}
+        .yt-badge{display:inline-flex;align-items:center;gap:3px;background:#ff4d6d18;border:1px solid #ff4d6d33;border-radius:4px;padding:1px 6px;font-size:9.5px;font-weight:600;color:#ff6b8a;letter-spacing:.3px;text-transform:uppercase;}
         @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
         @keyframes spin{to{transform:rotate(360deg)}}
         .cin{animation:fadeUp .3s ease forwards;}
+        .drop-zone-active{border-color:#7c6af7 !important;background:#14142a !important;}
       `}</style>
 
-      <div style={{ maxWidth: 1120, margin: "0 auto", padding: "30px 22px 0" }}>
+      {/* Local video player modal */}
+      {playerVideo && <LocalPlayer video={playerVideo} onClose={() => setPlayerVideo(null)} />}
+
+      <div style={{ maxWidth:1120, margin:"0 auto", padding:"30px 22px 0" }}>
 
         {/* ── Header ── */}
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
@@ -260,12 +434,15 @@ export default function VideoVault() {
             </div>
             <div>
               <div style={{ fontFamily:"'Cabinet Grotesk',system-ui", fontWeight:800, fontSize:19, letterSpacing:"-0.4px" }}>Video Vault</div>
-              <div style={{ fontSize:10.5, color:"#30304a", marginTop:1 }}>Your private learning library</div>
+              <div style={{ fontSize:10.5, color:"#30304a", marginTop:1 }}>YouTube & local videos</div>
             </div>
           </div>
           {videos.length > 0 && (
-            <div style={{ fontSize:12, color:"#50507a", background:"#0f0f1a", border:"1px solid #1c1c2e", borderRadius:8, padding:"5px 12px" }}>
-              <span style={{ color:"#8080a8", fontWeight:600 }}>{watchedCount}</span> / {videos.length} watched
+            <div style={{ fontSize:12, color:"#50507a", background:"#0f0f1a", border:"1px solid #1c1c2e",
+              borderRadius:8, padding:"5px 12px", display:"flex", gap:10, alignItems:"center" }}>
+              <span><span style={{ color:"#8080a8", fontWeight:600 }}>{watchedCount}</span> / {videos.length} watched</span>
+              {localCount > 0 && <span style={{ color:"#30304a" }}>·</span>}
+              {localCount > 0 && <span><span style={{ color:"#06b6d4", fontWeight:600 }}>{localCount}</span> local</span>}
             </div>
           )}
         </div>
@@ -276,17 +453,27 @@ export default function VideoVault() {
           </div>
         )}
 
-        {/* ── Add URL ── */}
-        <div style={{ marginTop:22, display:"flex", gap:8 }}>
-          <input ref={inputRef} className="url-input" placeholder="Paste a YouTube URL..."
+        {/* ── Add row ── */}
+        <div style={{ marginTop:22, display:"flex", gap:8, flexWrap:"wrap" }}>
+          <input ref={inputRef} className="url-input" placeholder="Paste a YouTube URL…"
             value={url} onChange={e => { setUrl(e.target.value); setError(""); }}
-            onKeyDown={e => e.key === "Enter" && !loading && handleAdd()} />
-          <button className="add-btn" onClick={handleAdd} disabled={loading || !url.trim()}>
+            onKeyDown={e => e.key === "Enter" && !loading && handleAddYT()} />
+          <button className="add-btn" onClick={handleAddYT} disabled={loading || !url.trim()}>
             {loading ? <div className="spinner"/> : <PlusIcon />}
             {loading ? "Fetching…" : "Add"}
           </button>
+
+          {/* File button */}
+          <input ref={fileRef} type="file" accept="video/*" multiple style={{ display:"none" }} onChange={handleFileChange} />
+          <button className="file-btn" onClick={() => fileRef.current?.click()} disabled={fileLoading}>
+            {fileLoading ? <div className="spinner" style={{ borderTopColor:"#8080a8" }}/> : <FilmIcon />}
+            {fileLoading ? "Processing…" : "Local file"}
+          </button>
         </div>
         {error && <div style={{ marginTop:7, fontSize:11.5, color:"#ff6b8a", paddingLeft:4 }}>{error}</div>}
+        <div style={{ marginTop:8, fontSize:11, color:"#2a2a40", paddingLeft:2 }}>
+          Local files are stored in your browser — they stay private and work offline.
+        </div>
 
         {/* ── Categories row ── */}
         <div style={{ marginTop:18, display:"flex", alignItems:"center", gap:7, flexWrap:"wrap" }}>
@@ -294,10 +481,10 @@ export default function VideoVault() {
           {categories.map(cat => (
             <div key={cat.id} style={{ display:"flex", alignItems:"center", gap:0 }}>
               <button className="cat-pill"
-                style={{ background: catFilter === cat.id ? cat.color+"22" : "#0f0f1a",
-                  border:`1px solid ${catFilter === cat.id ? cat.color+"66" : "#1c1c2e"}`,
-                  color: catFilter === cat.id ? cat.color : "#70709a" }}
-                onClick={() => setCatFilter(catFilter === cat.id ? "all" : cat.id)}>
+                style={{ background: catFilter===cat.id ? cat.color+"22" : "#0f0f1a",
+                  border:`1px solid ${catFilter===cat.id ? cat.color+"66" : "#1c1c2e"}`,
+                  color: catFilter===cat.id ? cat.color : "#70709a" }}
+                onClick={() => setCatFilter(catFilter===cat.id ? "all" : cat.id)}>
                 <span style={{ width:6, height:6, borderRadius:"50%", background:cat.color, display:"inline-block" }}/>
                 {cat.name}
               </button>
@@ -308,7 +495,7 @@ export default function VideoVault() {
           {showCatInput ? (
             <div style={{ display:"flex", gap:5, alignItems:"center" }}>
               <input value={newCatName} onChange={e => setNewCatName(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") addCategory(); if (e.key === "Escape") { setShowCatInput(false); setNewCatName(""); } }}
+                onKeyDown={e => { if (e.key==="Enter") addCategory(); if (e.key==="Escape") { setShowCatInput(false); setNewCatName(""); }}}
                 placeholder="Category name…" autoFocus
                 style={{ background:"#0f0f1a", border:"1px solid #2a2a44", borderRadius:7, padding:"4px 10px",
                   color:"#d0d0e8", fontSize:12, outline:"none", fontFamily:"inherit", width:130 }} />
@@ -322,7 +509,7 @@ export default function VideoVault() {
           )}
         </div>
 
-        {/* ── Filters + search + sort ── */}
+        {/* ── Filters + type toggle + search + sort ── */}
         {videos.length > 0 && (
           <div style={{ marginTop:14, display:"flex", alignItems:"center", gap:7, flexWrap:"wrap" }}>
             {[["all","All"], ["unwatched","Unwatched"], ["watched","Watched"]].map(([v, l]) => (
@@ -330,7 +517,24 @@ export default function VideoVault() {
                 {l} {v==="all"?videos.length:v==="watched"?watchedCount:videos.length-watchedCount}
               </button>
             ))}
-            {/* Priority filter */}
+
+            {/* Type filter — only show if both types present */}
+            {localCount > 0 && youtubeCount > 0 && (
+              <>
+                <button className={`filter-btn ${typeFilter==="youtube"?"on":""}`}
+                  style={typeFilter==="youtube"?{borderColor:"#ff4d6d66",color:"#ff6b8a",background:"#ff4d6d12"}:{}}
+                  onClick={() => setTypeFilter(typeFilter==="youtube"?"all":"youtube")}>
+                  YouTube
+                </button>
+                <button className={`filter-btn ${typeFilter==="local"?"on":""}`}
+                  style={typeFilter==="local"?{borderColor:"#06b6d466",color:"#06b6d4",background:"#06b6d412"}:{}}
+                  onClick={() => setTypeFilter(typeFilter==="local"?"all":"local")}>
+                  Local
+                </button>
+              </>
+            )}
+
+            {/* Priority filters */}
             {Object.entries(PRIORITIES).filter(([k])=>k!=="none").map(([k, p]) => (
               <button key={k} className={`filter-btn ${prioFilter===k?"on":""}`}
                 style={prioFilter===k?{borderColor:p.color+"66", color:p.color, background:p.bg}:{}}
@@ -339,11 +543,12 @@ export default function VideoVault() {
                 {p.label}
               </button>
             ))}
+
             <div className="search-wrap" style={{ maxWidth:200 }}>
               <span className="search-icon"><SearchIcon /></span>
               <input className="search-inp" placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} />
             </div>
-            {/* Sort dropdown */}
+
             <div ref={sortRef} style={{ position:"relative", marginLeft:"auto" }}>
               <button className="ghost-btn" style={{ display:"flex", alignItems:"center", gap:5 }}
                 onClick={() => setShowSort(s => !s)}>
@@ -351,7 +556,7 @@ export default function VideoVault() {
               </button>
               {showSort && (
                 <div className="sort-menu">
-                  {[["newest","Newest first"],["oldest","Oldest first"],["priority","By priority"],["title","Title A–Z"],["channel","Channel A–Z"]].map(([v,l]) => (
+                  {[["newest","Newest first"],["oldest","Oldest first"],["priority","By priority"],["title","Title A–Z"]].map(([v,l]) => (
                     <div key={v} className={`sort-item ${sortBy===v?"on":""}`} onClick={() => { setSortBy(v); setShowSort(false); }}>{l}</div>
                   ))}
                 </div>
@@ -368,7 +573,7 @@ export default function VideoVault() {
             <div className="empty">
               <div style={{ fontSize:34 }}>📼</div>
               <h3>{videos.length === 0 ? "Your vault is empty" : "No videos match"}</h3>
-              <p>{videos.length === 0 ? "Paste a YouTube URL above to start your library." : "Try adjusting your filters or search."}</p>
+              <p>{videos.length === 0 ? "Paste a YouTube URL or add a local video file to get started." : "Try adjusting your filters or search."}</p>
             </div>
           )}
           {filtered.map((video, i) => (
@@ -377,12 +582,13 @@ export default function VideoVault() {
               isEditing={editingCard === video.id}
               onToggleEdit={() => setEditingCard(editingCard === video.id ? null : video.id)}
               onWatch={() => saveVideos(videos.map(v => v.id===video.id ? {...v, watched:!v.watched} : v))}
-              onDelete={() => saveVideos(videos.filter(v => v.id!==video.id))}
+              onDelete={() => handleDelete(video)}
               onPriority={(p) => saveVideos(videos.map(v => v.id===video.id ? {...v, priority:p} : v))}
               onToggleCat={(catId) => toggleVideoCategory(video.id, catId)}
               onAddTag={(tag) => addTag(video.id, tag)}
               onRemoveTag={(tag) => removeTag(video.id, tag)}
               onNote={(note) => saveVideos(videos.map(v => v.id===video.id ? {...v, note} : v))}
+              onPlay={() => setPlayerVideo(video)}
             />
           ))}
         </div>
@@ -391,10 +597,11 @@ export default function VideoVault() {
   );
 }
 
-// ── VideoCard ──────────────────────────────────────────────────────────────
-function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWatch, onDelete, onPriority, onToggleCat, onAddTag, onRemoveTag, onNote }) {
+// ── VideoCard ─────────────────────────────────────────────────────────────
+function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWatch, onDelete, onPriority, onToggleCat, onAddTag, onRemoveTag, onNote, onPlay }) {
   const [tagInput, setTagInput] = useState("");
   const prio = PRIORITIES[video.priority] || PRIORITIES.none;
+  const isLocal = video.type === "local";
 
   const commitTag = () => {
     if (tagInput.trim()) { onAddTag(tagInput); setTagInput(""); }
@@ -402,12 +609,29 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
 
   const videoCats = categories.filter(c => video.categories.includes(c.id));
 
+  const handleThumbClick = () => {
+    if (isLocal) onPlay();
+    else window.open(`https://youtube.com/watch?v=${video.id}`, "_blank");
+  };
+
   return (
     <div className={`card cin ${video.watched ? "watched" : ""}`} style={{ animationDelay:`${animDelay}ms` }}>
       {/* Thumbnail */}
-      <div className="thumb" onClick={() => window.open(`https://youtube.com/watch?v=${video.id}`,"_blank")}>
-        <img src={video.thumbnail} alt={video.title} loading="lazy" />
-        <div className="play-ov"><PlayIcon /></div>
+      <div className="thumb" onClick={handleThumbClick}>
+        {video.thumbnail
+          ? <img src={video.thumbnail} alt={video.title} loading="lazy" />
+          : <div style={{ width:"100%", height:"100%", background:"#0a0a14", display:"flex", alignItems:"center", justifyContent:"center", color:"#30304a" }}><FilmIcon /></div>
+        }
+        <div className="play-ov">
+          <div style={{ background:"rgba(0,0,0,.5)", borderRadius:"50%", width:50, height:50,
+            display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <PlayIcon size={22} />
+          </div>
+          {isLocal && <span style={{ position:"absolute", bottom:8, right:8, fontSize:10,
+            background:"rgba(6,182,212,.9)", color:"white", borderRadius:5, padding:"2px 7px", fontWeight:700 }}>LOCAL</span>}
+        </div>
+
+        {/* priority badge */}
         {video.priority !== "none" && (
           <div style={{ position:"absolute", top:8, left:8, background:PRIORITIES[video.priority].color,
             borderRadius:5, padding:"2px 7px", fontSize:9.5, fontWeight:700, color:"white", textTransform:"uppercase", letterSpacing:"0.5px" }}>
@@ -423,9 +647,13 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
       {/* Body */}
       <div className="cbody">
         <div className="ctitle">{video.title}</div>
-        <div className="cchan">{video.channel}</div>
+        <div className="cchan">
+          {isLocal
+            ? <><span className="local-badge">Local</span> {video.fileSize ? fmtSize(video.fileSize) : ""}</>
+            : <><span className="yt-badge">YouTube</span> {video.channel}</>
+          }
+        </div>
 
-        {/* Category pills */}
         {videoCats.length > 0 && (
           <div className="row" style={{ marginBottom:9 }}>
             {videoCats.map(cat => (
@@ -439,7 +667,6 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
           </div>
         )}
 
-        {/* Tags */}
         {video.tags.length > 0 && (
           <div className="row" style={{ marginBottom:9 }}>
             {video.tags.map(tag => (
@@ -451,7 +678,6 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
           </div>
         )}
 
-        {/* Actions row */}
         <div className="row" style={{ justifyContent:"space-between" }}>
           <div className={`wcheck ${video.watched?"on":""}`} onClick={onWatch}>
             <div className="cbox"><CheckIcon /></div>
@@ -465,14 +691,12 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
           </div>
         </div>
 
-        {/* Expanded edit panel */}
         {isEditing && (
           <div style={{ marginTop:12 }}>
             <hr className="divider" />
 
-            {/* Priority */}
             <div style={{ marginBottom:10 }}>
-              <div style={{ fontSize:10.5, color:"#40405a", marginBottom:6, display:"flex", alignItems:"center", gap:4 }}>Priority</div>
+              <div style={{ fontSize:10.5, color:"#40405a", marginBottom:6 }}>Priority</div>
               <div className="row">
                 {Object.entries(PRIORITIES).map(([k, p]) => (
                   <button key={k} className="prio-badge"
@@ -487,7 +711,6 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
               </div>
             </div>
 
-            {/* Categories */}
             {categories.length > 0 && (
               <div style={{ marginBottom:10 }}>
                 <div style={{ fontSize:10.5, color:"#40405a", marginBottom:6 }}>Categories</div>
@@ -509,19 +732,17 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
               </div>
             )}
 
-            {/* Add tag */}
             <div style={{ marginBottom:10 }}>
               <div style={{ fontSize:10.5, color:"#40405a", marginBottom:6 }}>Tags</div>
               <div style={{ display:"flex", alignItems:"center", gap:5 }}>
                 <span style={{ fontSize:11, color:"#40405a" }}>#</span>
                 <input className="tag-inp" placeholder="add tag, enter…" value={tagInput}
                   onChange={e => setTagInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); commitTag(); } }} />
+                  onKeyDown={e => { if (e.key==="Enter"||e.key===",") { e.preventDefault(); commitTag(); }}} />
                 <button className="ghost-btn" onClick={commitTag} style={{ fontSize:10.5 }}>Add</button>
               </div>
             </div>
 
-            {/* Note */}
             <div>
               <div style={{ fontSize:10.5, color:"#40405a", marginBottom:6 }}>Notes</div>
               <textarea className="note-ta" rows={3} placeholder="Timestamps, key ideas…"
@@ -530,7 +751,6 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
           </div>
         )}
 
-        {/* Collapsed note preview */}
         {!isEditing && video.note && (
           <div onClick={onToggleEdit} style={{ marginTop:9, padding:"7px 9px",
             background:"#0a0a14", borderRadius:7, borderLeft:"2px solid #2a2a44",
