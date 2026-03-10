@@ -20,14 +20,14 @@ const videosCol   = collection(db, "videos");
 const catsCol     = collection(db, "categories");
 
 // ── localStorage migration key ────────────────────────────────────────────────
-const LEGACY_KEY      = "vidvault_v2";
-const MIGRATED_FLAG   = "vidvault_migrated_v1";
+const LEGACY_KEY    = "vidvault_v2";
+const MIGRATED_FLAG = "vidvault_migrated_v1";
 
 // ── IndexedDB (local file blobs only) ────────────────────────────────────────
 const DB_NAME    = "vidvault_files_v1";
 const STORE_NAME = "blobs";
 
-function openDB() {
+function openIDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
     req.onupgradeneeded = e => e.target.result.createObjectStore(STORE_NAME);
@@ -36,7 +36,7 @@ function openDB() {
   });
 }
 async function storeBlob(id, blob) {
-  const db = await openDB();
+  const db = await openIDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
     tx.objectStore(STORE_NAME).put(blob, id);
@@ -44,7 +44,7 @@ async function storeBlob(id, blob) {
   });
 }
 async function getBlob(id) {
-  const db = await openDB();
+  const db = await openIDB();
   return new Promise((resolve, reject) => {
     const tx  = db.transaction(STORE_NAME, "readonly");
     const req = tx.objectStore(STORE_NAME).get(id);
@@ -53,7 +53,7 @@ async function getBlob(id) {
   });
 }
 async function deleteBlob(id) {
-  const db = await openDB();
+  const db = await openIDB();
   return new Promise(resolve => {
     const tx = db.transaction(STORE_NAME, "readwrite");
     tx.objectStore(STORE_NAME).delete(id);
@@ -63,40 +63,25 @@ async function deleteBlob(id) {
 
 // ── Migration: localStorage → Firestore (runs once) ──────────────────────────
 async function migrateFromLocalStorage() {
-  // Skip if already migrated
   if (localStorage.getItem(MIGRATED_FLAG)) return;
-
   const raw = localStorage.getItem(LEGACY_KEY);
   if (!raw) { localStorage.setItem(MIGRATED_FLAG, "1"); return; }
-
   let legacy;
   try { legacy = JSON.parse(raw); } catch { localStorage.setItem(MIGRATED_FLAG, "1"); return; }
-
   const { videos = [], categories = [] } = legacy;
-  if (!videos.length && !categories.length) {
-    localStorage.setItem(MIGRATED_FLAG, "1"); return;
-  }
-
-  // Only migrate if Firestore is currently empty (don't overwrite existing cloud data)
+  if (!videos.length && !categories.length) { localStorage.setItem(MIGRATED_FLAG, "1"); return; }
   const existing = await getDocs(videosCol);
   if (!existing.empty) { localStorage.setItem(MIGRATED_FLAG, "1"); return; }
-
-  // Write in batches of 500 (Firestore limit)
   const allDocs = [
     ...videos.map(v => ({ col: videosCol, data: { ...v, type: v.type || "youtube" } })),
     ...categories.map(c => ({ col: catsCol, data: c })),
   ];
-
   for (let i = 0; i < allDocs.length; i += 400) {
     const batch = writeBatch(db);
-    allDocs.slice(i, i + 400).forEach(({ col, data }) => {
-      batch.set(doc(col, data.id), data);
-    });
+    allDocs.slice(i, i + 400).forEach(({ col, data }) => batch.set(doc(col, data.id), data));
     await batch.commit();
   }
-
   localStorage.setItem(MIGRATED_FLAG, "1");
-  console.log(`✅ Migrated ${videos.length} videos and ${categories.length} categories from localStorage to Firestore.`);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -133,15 +118,15 @@ function generateThumbnail(file) {
   });
 }
 function fmtSize(b) {
-  return b < 1024*1024 ? `${(b/1024).toFixed(0)} KB` : `${(b/(1024*1024)).toFixed(1)} MB`;
+  return b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / (1024 * 1024)).toFixed(1)} MB`;
 }
 function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 
 // ── Firestore helpers ─────────────────────────────────────────────────────────
-async function saveVideo(video)    { await setDoc(doc(videosCol, video.id), video); }
-async function removeVideo(id)     { await deleteDoc(doc(videosCol, id)); }
-async function saveCategory(cat)   { await setDoc(doc(catsCol, cat.id), cat); }
-async function removeCategory(id)  { await deleteDoc(doc(catsCol, id)); }
+async function saveVideo(video)   { await setDoc(doc(videosCol, video.id), video); }
+async function removeVideo(id)    { await deleteDoc(doc(videosCol, id)); }
+async function saveCategory(cat)  { await setDoc(doc(catsCol, cat.id), cat); }
+async function removeCategory(id) { await deleteDoc(doc(catsCol, id)); }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const TABS = {
@@ -164,20 +149,21 @@ const Ic = ({ d, size=14, sw=2 }) => (
     strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round"><path d={d}/></svg>
 );
 const Icons = {
-  trash:  () => <Ic d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>,
-  search: () => <Ic d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" size={15}/>,
-  plus:   () => <Ic d="M12 5v14M5 12h14" size={15} sw={2.5}/>,
-  tag:    () => <Ic d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82zM7 7h.01" size={13}/>,
-  folder: () => <Ic d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" size={13}/>,
-  sort:   () => <Ic d="M3 6h18M7 12h10M11 18h2" size={14}/>,
-  x:      () => <Ic d="M18 6L6 18M6 6l12 12" size={11} sw={2.5}/>,
-  film:   () => <Ic d="M15 10l4.553-2.069A1 1 0 0 1 21 8.845v6.31a1 1 0 0 1-1.447.914L15 14M3 8a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" size={15}/>,
-  upload: () => <Ic d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" size={16}/>,
-  link:   () => <Ic d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" size={15}/>,
-  check:  () => <svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.5L3.5 6L8 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>,
-  play:   ({ size=22 }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="white" opacity="0.9"><polygon points="5 3 19 12 5 21 5 3"/></svg>,
-  extLink:() => <Ic d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" size={13}/>,
-  vault: () => (
+  trash:   () => <Ic d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>,
+  search:  () => <Ic d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" size={15}/>,
+  plus:    () => <Ic d="M12 5v14M5 12h14" size={15} sw={2.5}/>,
+  tag:     () => <Ic d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82zM7 7h.01" size={13}/>,
+  folder:  () => <Ic d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" size={13}/>,
+  sort:    () => <Ic d="M3 6h18M7 12h10M11 18h2" size={14}/>,
+  x:       () => <Ic d="M18 6L6 18M6 6l12 12" size={11} sw={2.5}/>,
+  film:    () => <Ic d="M15 10l4.553-2.069A1 1 0 0 1 21 8.845v6.31a1 1 0 0 1-1.447.914L15 14M3 8a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" size={15}/>,
+  upload:  () => <Ic d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" size={16}/>,
+  link:    () => <Ic d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" size={15}/>,
+  check:   () => <svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.5L3.5 6L8 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  play:    ({ size=22 }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="white" opacity="0.9"><polygon points="5 3 19 12 5 21 5 3"/></svg>,
+  extLink: () => <Ic d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" size={13}/>,
+  image:   () => <Ic d="M21 19H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h18a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2zM8.5 10.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM21 15l-5-5L5 19" size={14}/>,
+  vault:   () => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <rect x="2" y="3" width="20" height="18" rx="3"/><circle cx="12" cy="12" r="3"/>
       <path d="M12 9V7M12 17v-2M9 12H7M17 12h-2"/>
@@ -218,7 +204,7 @@ function LocalPlayer({ video, onClose }) {
     return () => document.removeEventListener("keydown", fn);
   }, [onClose]);
   return (
-    <div onClick={e => e.target===e.currentTarget && onClose()} style={{
+    <div onClick={e => e.target === e.currentTarget && onClose()} style={{
       position:"fixed", inset:0, background:"rgba(0,0,0,.92)", zIndex:1000,
       display:"flex", alignItems:"center", justifyContent:"center", padding:20
     }}>
@@ -313,11 +299,11 @@ function SocialAddForm({ platform, onAdd, loading, error }) {
 // ── Sync status badge ─────────────────────────────────────────────────────────
 function SyncBadge({ status }) {
   const cfg = {
-    connecting: { color:"#50507a", label:"Connecting…", dot:"#50507a" },
+    connecting: { color:"#50507a", label:"Connecting…",           dot:"#50507a" },
     migrating:  { color:"#ffb830", label:"Restoring your videos…", dot:"#ffb830" },
-    synced:     { color:"#4ade80", label:"Synced",       dot:"#4ade80" },
-    saving:     { color:"#ffb830", label:"Saving…",      dot:"#ffb830" },
-    error:      { color:"#ff6b8a", label:"Sync error",   dot:"#ff6b8a" },
+    synced:     { color:"#4ade80", label:"Synced",                 dot:"#4ade80" },
+    saving:     { color:"#ffb830", label:"Saving…",                dot:"#ffb830" },
+    error:      { color:"#ff6b8a", label:"Sync error",             dot:"#ff6b8a" },
   }[status] || { color:"#50507a", label:"…", dot:"#50507a" };
   return (
     <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:11.5,
@@ -327,6 +313,36 @@ function SyncBadge({ status }) {
         boxShadow: status==="synced" ? `0 0 6px ${cfg.dot}` : "none",
         display:"inline-block", flexShrink:0 }}/>
       {cfg.label}
+    </div>
+  );
+}
+
+// ── Social Thumbnail ──────────────────────────────────────────────────────────
+function SocialThumb({ video }) {
+  const isIG = video.type === "instagram";
+  if (video.thumbnail) {
+    return <img src={video.thumbnail} alt={video.title}
+      style={{ width:"100%", height:"100%", objectFit:"cover" }}/>;
+  }
+  const grad = isIG
+    ? "linear-gradient(135deg,#833ab4,#fd1d1d,#fcb045)"
+    : "linear-gradient(135deg,#1877f2,#0d5dbf)";
+  return (
+    <div style={{ width:"100%", height:"100%", background:grad,
+      display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:10 }}>
+      <div style={{ width:44, height:44, borderRadius:14, background:"rgba(255,255,255,.15)",
+        display:"flex", alignItems:"center", justifyContent:"center" }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="white">
+          {isIG
+            ? <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 1 0 0 12.324 6.162 6.162 0 0 0 0-12.324zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm6.406-11.845a1.44 1.44 0 1 0 0 2.881 1.44 1.44 0 0 0 0-2.881z"/>
+            : <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+          }
+        </svg>
+      </div>
+      <div style={{ fontSize:10.5, color:"rgba(255,255,255,.7)", fontWeight:600, letterSpacing:"0.5px" }}>
+        {isIG ? "INSTAGRAM" : "FACEBOOK"}
+      </div>
+      <div style={{ fontSize:9.5, color:"rgba(255,255,255,.38)" }}>edit → add thumbnail</div>
     </div>
   );
 }
@@ -358,35 +374,19 @@ export default function VideoVault() {
   const fileRef    = useRef(null);
   const sortRef    = useRef(null);
 
-  // ── Real-time Firestore listeners + one-time migration ────────────────────
+  // ── Firestore listeners + migration ──────────────────────────────────────
   useEffect(() => {
-    // Run migration first, then start listeners
     setSyncStatus("connecting");
-
-    migrateFromLocalStorage()
-      .then(() => {
-        // after migration (or skip), just let the onSnapshot update state
-      })
-      .catch(err => console.warn("Migration failed silently:", err));
-
+    migrateFromLocalStorage().catch(e => console.warn("Migration:", e));
     const unsubVideos = onSnapshot(videosCol,
-      snap => {
-        setVideos(snap.docs.map(d => d.data()).sort((a,b) => b.addedAt - a.addedAt));
-        setSyncStatus("synced");
-      },
+      snap => { setVideos(snap.docs.map(d => d.data()).sort((a,b) => b.addedAt - a.addedAt)); setSyncStatus("synced"); },
       () => setSyncStatus("error")
     );
-    const unsubCats = onSnapshot(catsCol,
-      snap => setCategories(snap.docs.map(d => d.data())),
-      () => {}
-    );
+    const unsubCats = onSnapshot(catsCol, snap => setCategories(snap.docs.map(d => d.data())), () => {});
     return () => { unsubVideos(); unsubCats(); };
   }, []);
 
-  useEffect(() => {
-    setFilter("all"); setCatFilter("all"); setPrioFilter("all"); setSearch(""); setError("");
-  }, [tab]);
-
+  useEffect(() => { setFilter("all"); setCatFilter("all"); setPrioFilter("all"); setSearch(""); setError(""); }, [tab]);
   useEffect(() => { if (tab==="youtube") setTimeout(() => ytInputRef.current?.focus(), 80); }, [tab]);
   useEffect(() => {
     const fn = e => { if (sortRef.current && !sortRef.current.contains(e.target)) setShowSort(false); };
@@ -394,14 +394,12 @@ export default function VideoVault() {
     return () => document.removeEventListener("mousedown", fn);
   }, []);
 
-  // ── Firestore write helpers ───────────────────────────────────────────────
   const withSaving = async (fn) => {
     setSyncStatus("saving");
     try { await fn(); setSyncStatus("synced"); }
     catch { setSyncStatus("error"); }
   };
 
-  // ── Add YouTube ───────────────────────────────────────────────────────────
   const handleAddYT = async () => {
     setError("");
     const trimmed = ytUrl.trim();
@@ -413,8 +411,7 @@ export default function VideoVault() {
     try {
       const meta = await fetchOEmbed(videoId);
       await withSaving(() => saveVideo({
-        id:videoId, type:"youtube",
-        title:meta.title, channel:meta.channel,
+        id:videoId, type:"youtube", title:meta.title, channel:meta.channel,
         thumbnail:`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
         url:`https://youtube.com/watch?v=${videoId}`,
         watched:false, priority:"none", categories:[], tags:[], note:"", addedAt:Date.now(),
@@ -424,7 +421,6 @@ export default function VideoVault() {
     setYtLoading(false);
   };
 
-  // ── Add Social ────────────────────────────────────────────────────────────
   const handleAddSocial = async (platform, url, title) => {
     setError("");
     if (videos.find(v => v.url === url)) { setError("Already in your vault"); return; }
@@ -438,7 +434,6 @@ export default function VideoVault() {
     setSocialLoading(false);
   };
 
-  // ── Add Local ─────────────────────────────────────────────────────────────
   const handleFiles = async e => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
@@ -461,20 +456,17 @@ export default function VideoVault() {
     e.target.value = "";
   };
 
-  // ── Delete ────────────────────────────────────────────────────────────────
   const handleDelete = async video => {
     if (video.type === "local") deleteBlob(video.id).catch(() => {});
     await withSaving(() => removeVideo(video.id));
   };
 
-  // ── Update video ──────────────────────────────────────────────────────────
   const updateVideo = async (id, fields) => {
     const video = videos.find(v => v.id === id);
     if (!video) return;
     await withSaving(() => saveVideo({ ...video, ...fields }));
   };
 
-  // ── Categories ────────────────────────────────────────────────────────────
   const addCategory = async () => {
     const name = newCatName.trim();
     if (!name || categories.find(c => c.name.toLowerCase()===name.toLowerCase())) return;
@@ -498,8 +490,6 @@ export default function VideoVault() {
       : [...video.categories, catId];
     await withSaving(() => saveVideo({ ...video, categories:cats }));
   };
-
-  // ── Tags ──────────────────────────────────────────────────────────────────
   const addTag = async (vid, tag) => {
     const clean = tag.replace(/^#+/,"").trim().toLowerCase().replace(/\s+/g,"-");
     if (!clean) return;
@@ -513,7 +503,6 @@ export default function VideoVault() {
     await withSaving(() => saveVideo({ ...video, tags:video.tags.filter(t=>t!==tag) }));
   };
 
-  // ── Filtered list ─────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let list = videos.filter(v => tab==="youtube" ? (v.type==="youtube"||!v.type) : v.type===tab);
     if (filter==="watched")   list = list.filter(v=>v.watched);
@@ -532,7 +521,7 @@ export default function VideoVault() {
     return list;
   }, [videos, tab, filter, catFilter, prioFilter, search, sortBy]);
 
-  const countFor   = t => videos.filter(v => t==="youtube" ? (v.type==="youtube"||!v.type) : v.type===t).length;
+  const countFor   = k => videos.filter(v => k==="youtube" ? (v.type==="youtube"||!v.type) : v.type===k).length;
   const allCurList = videos.filter(v => tab==="youtube" ? (v.type==="youtube"||!v.type) : v.type===tab);
   const curWatched = allCurList.filter(v=>v.watched).length;
   const t = TABS[tab];
@@ -598,8 +587,10 @@ export default function VideoVault() {
         .drop-zone:hover{border-color:#06b6d444;background:#06b6d408;}
         .tab-wrap{display:grid;grid-template-columns:repeat(4,1fr);background:#0a0a14;border:1px solid #1c1c2e;border-radius:16px;padding:5px;gap:4px;}
         .tab-btn{display:flex;align-items:center;justify-content:center;gap:5px;padding:10px 6px;border-radius:10px;border:none;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;transition:all .22s cubic-bezier(.4,0,.2,1);background:transparent;white-space:nowrap;}
-@media(max-width:500px){.tab-wrap{grid-template-columns:repeat(2,1fr);}.tab-btn{font-size:11px;padding:9px 6px;}.tab-btn span:first-child{display:none;}}
         .tab-count{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;transition:all .22s;}
+        .paste-thumb-btn{display:flex;align-items:center;gap:8px;width:100%;background:#0a0a14;border:1.5px dashed #2a2a44;border-radius:10px;padding:11px 14px;color:#7070a0;font-size:12px;cursor:pointer;font-family:inherit;transition:all .2s;text-align:left;}
+        .paste-thumb-btn:hover{border-color:#7c6af7;color:#a0a0d0;background:#0f0f20;}
+        @media(max-width:500px){.tab-wrap{grid-template-columns:repeat(2,1fr);}.tab-btn{font-size:11px;padding:9px 6px;}.tab-btn span:first-child{display:none;}}
         @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         @keyframes spin{to{transform:rotate(360deg)}}
         .cin{animation:fadeUp .28s ease forwards;}
@@ -823,6 +814,7 @@ export default function VideoVault() {
               onAddTag={tag => addTag(video.id,tag)}
               onRemoveTag={tag => removeTag(video.id,tag)}
               onNote={note => updateVideo(video.id, { note })}
+              onThumbnail={thumb => updateVideo(video.id, { thumbnail: thumb })}
               onPlay={() => video.type==="local"
                 ? setPlayerVideo(video)
                 : window.open(video.url||`https://youtube.com/watch?v=${video.id}`,"_blank")}
@@ -834,44 +826,45 @@ export default function VideoVault() {
   );
 }
 
-// ── Social Thumbnail ──────────────────────────────────────────────────────────
-function SocialThumb({ video }) {
-  const isIG = video.type === "instagram";
-  const grad = isIG
-    ? "linear-gradient(135deg,#833ab4,#fd1d1d,#fcb045)"
-    : "linear-gradient(135deg,#1877f2,#0d5dbf)";
-  return (
-    <div style={{ width:"100%", height:"100%", background:grad,
-      display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:10 }}>
-      <div style={{ width:44, height:44, borderRadius:14, background:"rgba(255,255,255,.15)",
-        display:"flex", alignItems:"center", justifyContent:"center" }}>
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="white">
-          {isIG
-            ? <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 1 0 0 12.324 6.162 6.162 0 0 0 0-12.324zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm6.406-11.845a1.44 1.44 0 1 0 0 2.881 1.44 1.44 0 0 0 0-2.881z"/>
-            : <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-          }
-        </svg>
-      </div>
-      <div style={{ fontSize:10.5, color:"rgba(255,255,255,.7)", fontWeight:600, letterSpacing:"0.5px" }}>
-        {isIG ? "INSTAGRAM" : "FACEBOOK"}
-      </div>
-    </div>
-  );
-}
-
 // ── VideoCard ─────────────────────────────────────────────────────────────────
-function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWatch, onDelete, onPriority, onToggleCat, onAddTag, onRemoveTag, onNote, onPlay }) {
+function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWatch, onDelete, onPriority, onToggleCat, onAddTag, onRemoveTag, onNote, onThumbnail, onPlay }) {
   const [tagInput, setTagInput] = useState("");
-  const isLocal   = video.type === "local";
+  const [thumbMsg, setThumbMsg] = useState("");
   const isSocial  = video.type === "instagram" || video.type === "facebook";
+  const isLocal   = video.type === "local";
   const videoCats = categories.filter(c => video.categories.includes(c.id));
   const commitTag = () => { if(tagInput.trim()){onAddTag(tagInput);setTagInput("");} };
   const tabCfg    = TABS[video.type] || TABS.youtube;
 
+  const handlePasteThumb = async () => {
+    setThumbMsg("");
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const imgType = item.types.find(t => t.startsWith("image/"));
+        if (imgType) {
+          const blob = await item.getType(imgType);
+          const reader = new FileReader();
+          reader.onload = () => {
+            onThumbnail(reader.result);
+            setThumbMsg("✓ Thumbnail saved!");
+            setTimeout(() => setThumbMsg(""), 2500);
+          };
+          reader.readAsDataURL(blob);
+          return;
+        }
+      }
+      setThumbMsg("No image in clipboard — copy a screenshot first.");
+    } catch {
+      setThumbMsg("Clipboard access denied — allow it in browser settings.");
+    }
+  };
+
   return (
     <div className={`card cin ${video.watched?"watched":""}`} style={{ animationDelay:`${animDelay}ms` }}>
       <div className="thumb" onClick={onPlay}>
-        {isSocial ? <SocialThumb video={video} />
+        {isSocial
+          ? <SocialThumb video={video} />
           : video.thumbnail
             ? <img src={video.thumbnail} alt={video.title} loading="lazy"/>
             : <div style={{ width:"100%",height:"100%",background:"#0a0a14",display:"flex",alignItems:"center",justifyContent:"center",color:"#30304a" }}><Icons.film /></div>
@@ -946,6 +939,38 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
         {isEditing && (
           <div style={{ marginTop:12 }}>
             <hr className="divider"/>
+
+            {/* ── Paste thumbnail (IG / FB only) ── */}
+            {isSocial && (
+              <div style={{ marginBottom:12 }}>
+                <div style={{ fontSize:10.5,color:"#40405a",marginBottom:6,display:"flex",alignItems:"center",gap:5 }}>
+                  <Icons.image /> Thumbnail
+                </div>
+                <button className="paste-thumb-btn" onClick={handlePasteThumb}>
+                  📋 Paste screenshot from clipboard
+                </button>
+                {thumbMsg && (
+                  <div style={{ marginTop:5, fontSize:11,
+                    color: thumbMsg.startsWith("✓") ? "#4ade80" : "#ff6b8a" }}>
+                    {thumbMsg}
+                  </div>
+                )}
+                {video.thumbnail && (
+                  <div style={{ marginTop:8, position:"relative" }}>
+                    <img src={video.thumbnail} alt="thumb"
+                      style={{ width:"100%", borderRadius:8, aspectRatio:"16/9", objectFit:"cover", display:"block" }}/>
+                    <button onClick={() => { onThumbnail(null); setThumbMsg(""); }}
+                      style={{ position:"absolute",top:6,right:6,background:"rgba(0,0,0,.75)",
+                        border:"none",borderRadius:6,color:"white",cursor:"pointer",
+                        fontSize:10.5,padding:"3px 8px",fontFamily:"inherit" }}>
+                      remove
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Priority ── */}
             <div style={{ marginBottom:10 }}>
               <div style={{ fontSize:10.5,color:"#40405a",marginBottom:6 }}>Priority</div>
               <div className="row">
@@ -960,6 +985,8 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
                 ))}
               </div>
             </div>
+
+            {/* ── Categories ── */}
             {categories.length>0 && (
               <div style={{ marginBottom:10 }}>
                 <div style={{ fontSize:10.5,color:"#40405a",marginBottom:6 }}>Categories</div>
@@ -979,6 +1006,8 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
                 </div>
               </div>
             )}
+
+            {/* ── Tags ── */}
             <div style={{ marginBottom:10 }}>
               <div style={{ fontSize:10.5,color:"#40405a",marginBottom:6 }}>Tags</div>
               <div style={{ display:"flex",alignItems:"center",gap:5 }}>
@@ -989,6 +1018,8 @@ function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWa
                 <button className="ghost-btn" onClick={commitTag} style={{ fontSize:10.5 }}>Add</button>
               </div>
             </div>
+
+            {/* ── Notes ── */}
             <div>
               <div style={{ fontSize:10.5,color:"#40405a",marginBottom:6 }}>Notes</div>
               <textarea className="note-ta" rows={3} placeholder="Key ideas, timestamps…"
