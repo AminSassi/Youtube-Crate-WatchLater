@@ -2,22 +2,26 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore, collection, doc, setDoc, deleteDoc,
-  onSnapshot, writeBatch
+  onSnapshot, writeBatch, getDocs
 } from "firebase/firestore";
 
-// ── Firebase config ───────────────────────────────────────────────────────────
+// ── Firebase config (env variables) ──────────────────────────────────────────
 const firebaseConfig = {
-  apiKey: "AIzaSyBYfPbOJsIJBLNVAMiLqHQ4vU0dWxLcRJQ",
-  authDomain: "vidvault-7a0ee.firebaseapp.com",
-  projectId: "vidvault-7a0ee",
-  storageBucket: "vidvault-7a0ee.firebasestorage.app",
-  messagingSenderId: "470180407124",
-  appId: "1:470180407124:web:5f96f1d3a5f0f728c1cac1"
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain:        "vidvault-7a0ee.firebaseapp.com",
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket:     "vidvault-7a0ee.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_SENDER_ID,
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 const firebaseApp = initializeApp(firebaseConfig);
 const db          = getFirestore(firebaseApp);
 const videosCol   = collection(db, "videos");
 const catsCol     = collection(db, "categories");
+
+// ── localStorage migration key ────────────────────────────────────────────────
+const LEGACY_KEY      = "vidvault_v2";
+const MIGRATED_FLAG   = "vidvault_migrated_v1";
 
 // ── IndexedDB (local file blobs only) ────────────────────────────────────────
 const DB_NAME    = "vidvault_files_v1";
@@ -55,6 +59,44 @@ async function deleteBlob(id) {
     tx.objectStore(STORE_NAME).delete(id);
     tx.oncomplete = resolve;
   });
+}
+
+// ── Migration: localStorage → Firestore (runs once) ──────────────────────────
+async function migrateFromLocalStorage() {
+  // Skip if already migrated
+  if (localStorage.getItem(MIGRATED_FLAG)) return;
+
+  const raw = localStorage.getItem(LEGACY_KEY);
+  if (!raw) { localStorage.setItem(MIGRATED_FLAG, "1"); return; }
+
+  let legacy;
+  try { legacy = JSON.parse(raw); } catch { localStorage.setItem(MIGRATED_FLAG, "1"); return; }
+
+  const { videos = [], categories = [] } = legacy;
+  if (!videos.length && !categories.length) {
+    localStorage.setItem(MIGRATED_FLAG, "1"); return;
+  }
+
+  // Only migrate if Firestore is currently empty (don't overwrite existing cloud data)
+  const existing = await getDocs(videosCol);
+  if (!existing.empty) { localStorage.setItem(MIGRATED_FLAG, "1"); return; }
+
+  // Write in batches of 500 (Firestore limit)
+  const allDocs = [
+    ...videos.map(v => ({ col: videosCol, data: { ...v, type: v.type || "youtube" } })),
+    ...categories.map(c => ({ col: catsCol, data: c })),
+  ];
+
+  for (let i = 0; i < allDocs.length; i += 400) {
+    const batch = writeBatch(db);
+    allDocs.slice(i, i + 400).forEach(({ col, data }) => {
+      batch.set(doc(col, data.id), data);
+    });
+    await batch.commit();
+  }
+
+  localStorage.setItem(MIGRATED_FLAG, "1");
+  console.log(`✅ Migrated ${videos.length} videos and ${categories.length} categories from localStorage to Firestore.`);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -96,23 +138,10 @@ function fmtSize(b) {
 function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 
 // ── Firestore helpers ─────────────────────────────────────────────────────────
-async function saveVideo(video) {
-  await setDoc(doc(videosCol, video.id), video);
-}
-async function removeVideo(id) {
-  await deleteDoc(doc(videosCol, id));
-}
-async function saveCategory(cat) {
-  await setDoc(doc(catsCol, cat.id), cat);
-}
-async function removeCategory(id) {
-  await deleteDoc(doc(catsCol, id));
-}
-async function batchUpdateVideos(videos) {
-  const batch = writeBatch(db);
-  videos.forEach(v => batch.set(doc(videosCol, v.id), v));
-  await batch.commit();
-}
+async function saveVideo(video)    { await setDoc(doc(videosCol, video.id), video); }
+async function removeVideo(id)     { await deleteDoc(doc(videosCol, id)); }
+async function saveCategory(cat)   { await setDoc(doc(catsCol, cat.id), cat); }
+async function removeCategory(id)  { await deleteDoc(doc(catsCol, id)); }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const TABS = {
@@ -148,8 +177,6 @@ const Icons = {
   check:  () => <svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.5L3.5 6L8 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   play:   ({ size=22 }) => <svg width={size} height={size} viewBox="0 0 24 24" fill="white" opacity="0.9"><polygon points="5 3 19 12 5 21 5 3"/></svg>,
   extLink:() => <Ic d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" size={13}/>,
-  cloud:  () => <Ic d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" size={13}/>,
-  cloudOk:() => <Ic d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10zM12 12v4M10 14l2 2 2-2" size={13}/>,
   vault: () => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <rect x="2" y="3" width="20" height="18" rx="3"/><circle cx="12" cy="12" r="3"/>
@@ -286,10 +313,11 @@ function SocialAddForm({ platform, onAdd, loading, error }) {
 // ── Sync status badge ─────────────────────────────────────────────────────────
 function SyncBadge({ status }) {
   const cfg = {
-    connecting: { color:"#50507a", label:"Connecting…",  dot:"#50507a" },
-    synced:     { color:"#4ade80", label:"Synced",        dot:"#4ade80" },
-    saving:     { color:"#ffb830", label:"Saving…",       dot:"#ffb830" },
-    error:      { color:"#ff6b8a", label:"Sync error",    dot:"#ff6b8a" },
+    connecting: { color:"#50507a", label:"Connecting…", dot:"#50507a" },
+    migrating:  { color:"#ffb830", label:"Restoring your videos…", dot:"#ffb830" },
+    synced:     { color:"#4ade80", label:"Synced",       dot:"#4ade80" },
+    saving:     { color:"#ffb830", label:"Saving…",      dot:"#ffb830" },
+    error:      { color:"#ff6b8a", label:"Sync error",   dot:"#ff6b8a" },
   }[status] || { color:"#50507a", label:"…", dot:"#50507a" };
   return (
     <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:11.5,
@@ -309,29 +337,38 @@ export default function VideoVault() {
   const [categories, setCategories] = useState([]);
   const [syncStatus, setSyncStatus] = useState("connecting");
 
-  const [tab, setTab]               = useState("youtube");
-  const [ytUrl, setYtUrl]           = useState("");
-  const [ytLoading, setYtLoading]   = useState(false);
+  const [tab, setTab]                     = useState("youtube");
+  const [ytUrl, setYtUrl]                 = useState("");
+  const [ytLoading, setYtLoading]         = useState(false);
   const [socialLoading, setSocialLoading] = useState(false);
   const [fileLoading, setFileLoading]     = useState(false);
-  const [error, setError]           = useState("");
-  const [filter, setFilter]         = useState("all");
-  const [catFilter, setCatFilter]   = useState("all");
-  const [prioFilter, setPrioFilter] = useState("all");
-  const [search, setSearch]         = useState("");
-  const [sortBy, setSortBy]         = useState("newest");
-  const [showSort, setShowSort]     = useState(false);
-  const [editingCard, setEditingCard] = useState(null);
-  const [newCatName, setNewCatName] = useState("");
-  const [showCatInput, setShowCatInput] = useState(false);
-  const [playerVideo, setPlayerVideo]   = useState(null);
+  const [error, setError]                 = useState("");
+  const [filter, setFilter]               = useState("all");
+  const [catFilter, setCatFilter]         = useState("all");
+  const [prioFilter, setPrioFilter]       = useState("all");
+  const [search, setSearch]               = useState("");
+  const [sortBy, setSortBy]               = useState("newest");
+  const [showSort, setShowSort]           = useState(false);
+  const [editingCard, setEditingCard]     = useState(null);
+  const [newCatName, setNewCatName]       = useState("");
+  const [showCatInput, setShowCatInput]   = useState(false);
+  const [playerVideo, setPlayerVideo]     = useState(null);
 
   const ytInputRef = useRef(null);
   const fileRef    = useRef(null);
   const sortRef    = useRef(null);
 
-  // ── Real-time Firestore listeners ─────────────────────────────────────────
+  // ── Real-time Firestore listeners + one-time migration ────────────────────
   useEffect(() => {
+    // Run migration first, then start listeners
+    setSyncStatus("connecting");
+
+    migrateFromLocalStorage()
+      .then(() => {
+        // after migration (or skip), just let the onSnapshot update state
+      })
+      .catch(err => console.warn("Migration failed silently:", err));
+
     const unsubVideos = onSnapshot(videosCol,
       snap => {
         setVideos(snap.docs.map(d => d.data()).sort((a,b) => b.addedAt - a.addedAt));
@@ -430,7 +467,7 @@ export default function VideoVault() {
     await withSaving(() => removeVideo(video.id));
   };
 
-  // ── Update a single video field(s) ────────────────────────────────────────
+  // ── Update video ──────────────────────────────────────────────────────────
   const updateVideo = async (id, fields) => {
     const video = videos.find(v => v.id === id);
     if (!video) return;
@@ -446,7 +483,6 @@ export default function VideoVault() {
     setNewCatName(""); setShowCatInput(false);
   };
   const deleteCategoryFn = async id => {
-    // remove from all videos
     const affected = videos.filter(v => v.categories.includes(id));
     await withSaving(async () => {
       await removeCategory(id);
@@ -601,9 +637,9 @@ export default function VideoVault() {
         {/* ══ Tabs ══ */}
         <div className="tab-wrap" style={{ marginBottom:26 }}>
           {Object.entries(TABS).map(([key, cfg]) => {
-            const active   = tab === key;
-            const count    = countFor(key);
-            const TabIcon  = key==="youtube" ? Icons.yt : key==="instagram" ? Icons.ig : key==="facebook" ? Icons.fb : Icons.film;
+            const active  = tab === key;
+            const count   = countFor(key);
+            const TabIcon = key==="youtube" ? Icons.yt : key==="instagram" ? Icons.ig : key==="facebook" ? Icons.fb : Icons.film;
             return (
               <button key={key} className="tab-btn" onClick={() => setTab(key)} style={{
                 background: active ? cfg.darkBg : "transparent",
@@ -761,9 +797,10 @@ export default function VideoVault() {
             <div className="empty">
               <div className="spinner" style={{ width:28, height:28, borderWidth:3, borderTopColor:"#7c6af7", borderColor:"#1c1c2e" }}/>
               <h3>Connecting to cloud…</h3>
+              <p>Restoring your saved videos.</p>
             </div>
           )}
-          {syncStatus!=="connecting" && filtered.length === 0 && (
+          {syncStatus!=="connecting" && filtered.length===0 && (
             <div className="empty">
               <div style={{ fontSize:38 }}>{t.emoji}</div>
               <h3>{allCurList.length===0 ? `No ${t.label} saves yet` : "No items match"}</h3>
@@ -824,8 +861,8 @@ function SocialThumb({ video }) {
 // ── VideoCard ─────────────────────────────────────────────────────────────────
 function VideoCard({ video, categories, animDelay, isEditing, onToggleEdit, onWatch, onDelete, onPriority, onToggleCat, onAddTag, onRemoveTag, onNote, onPlay }) {
   const [tagInput, setTagInput] = useState("");
-  const isLocal  = video.type === "local";
-  const isSocial = video.type === "instagram" || video.type === "facebook";
+  const isLocal   = video.type === "local";
+  const isSocial  = video.type === "instagram" || video.type === "facebook";
   const videoCats = categories.filter(c => video.categories.includes(c.id));
   const commitTag = () => { if(tagInput.trim()){onAddTag(tagInput);setTagInput("");} };
   const tabCfg    = TABS[video.type] || TABS.youtube;
