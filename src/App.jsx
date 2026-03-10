@@ -597,7 +597,8 @@ export default function VideoVault() {
         .drop-zone{border:1.5px dashed #1c1c2e;border-radius:16px;padding:32px 20px;display:flex;flex-direction:column;align-items:center;gap:12px;cursor:pointer;transition:all .2s;}
         .drop-zone:hover{border-color:#06b6d444;background:#06b6d408;}
         .tab-wrap{display:grid;grid-template-columns:repeat(4,1fr);background:#0a0a14;border:1px solid #1c1c2e;border-radius:16px;padding:5px;gap:4px;}
-        .tab-btn{display:flex;align-items:center;justify-content:center;gap:7px;padding:10px 8px;border-radius:10px;border:none;cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;transition:all .22s cubic-bezier(.4,0,.2,1);background:transparent;white-space:nowrap;}
+        .tab-btn{display:flex;align-items:center;justify-content:center;gap:5px;padding:10px 6px;border-radius:10px;border:none;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;transition:all .22s cubic-bezier(.4,0,.2,1);background:transparent;white-space:nowrap;}
+@media(max-width:500px){.tab-wrap{grid-template-columns:repeat(2,1fr);}.tab-btn{font-size:11px;padding:9px 6px;}.tab-btn span:first-child{display:none;}}
         .tab-count{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;transition:all .22s;}
         @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
         @keyframes spin{to{transform:rotate(360deg)}}
