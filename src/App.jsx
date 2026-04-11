@@ -8,43 +8,67 @@ import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut,
   onAuthStateChanged
 } from "firebase/auth";
-import {
-  getStorage, ref, uploadBytes, getDownloadURL, deleteObject
-} from "firebase/storage";
 
 // ── Firebase config (env variables) ──────────────────────────────────────────
 const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain:        "vidvault-7a0ee.firebaseapp.com",
   projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket:     "vidvault-7a0ee.firebasestorage.app",
   messagingSenderId: import.meta.env.VITE_FIREBASE_SENDER_ID,
   appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 const firebaseApp = initializeApp(firebaseConfig);
 const db          = getFirestore(firebaseApp);
 const auth        = getAuth(firebaseApp);
-const storage     = getStorage(firebaseApp);
 const provider    = new GoogleAuthProvider();
 const videosCol   = collection(db, "videos");
 const catsCol     = collection(db, "categories");
 
-async function uploadLocalFile(file, id) {
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const path = `local_videos/${id}/${safeName}`;
-  const storageRef = ref(storage, path);
-  await uploadBytes(storageRef, file);
-  const url = await getDownloadURL(storageRef);
-  return { storagePath: path, url };
+const LOCAL_DB    = "vidvault_local_files";
+const LOCAL_STORE = "files";
+function openLocalDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(LOCAL_DB, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(LOCAL_STORE, { keyPath: "id" });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
 }
-
-async function deleteLocalFile(path) {
-  if (!path) return;
-  try {
-    await deleteObject(ref(storage, path));
-  } catch (err) {
-    console.warn("Storage delete failed:", err);
-  }
+async function saveLocalFileBlob(id, file) {
+  const db = await openLocalDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_STORE, "readwrite");
+    const store = tx.objectStore(LOCAL_STORE);
+    const req = store.put({ id, blob: file, createdAt: Date.now() });
+    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function getLocalFileBlob(id) {
+  const db = await openLocalDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_STORE, "readonly");
+    const req = tx.objectStore(LOCAL_STORE).get(id);
+    req.onsuccess = () => resolve(req.result?.blob || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function getLocalFileURL(id) {
+  const blob = await getLocalFileBlob(id);
+  return blob ? URL.createObjectURL(blob) : null;
+}
+async function deleteLocalFileBlob(id) {
+  const db = await openLocalDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_STORE, "readwrite");
+    const req = tx.objectStore(LOCAL_STORE).delete(id);
+    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 // ── localStorage migration key ────────────────────────────────────────────────
@@ -178,10 +202,30 @@ const Icons = {
 
 // ── Local Player Modal ────────────────────────────────────────────────────────
 function LocalPlayer({ video, onClose }) {
-  const [err, setErr] = useState(false);
+  const [localUrl, setLocalUrl] = useState(video.type === "local" ? null : video.url);
+  const [err, setErr] = useState(video.type === "local" ? false : !video.url);
   useEffect(() => {
-    setErr(!video.url);
-  }, [video.url]);
+    if (video.type !== "local") {
+      setLocalUrl(video.url);
+      setErr(!video.url);
+      return;
+    }
+    let active = true;
+    let objectUrl = null;
+    setErr(false);
+    getLocalFileURL(video.id).then(url => {
+      if (!active) return;
+      if (!url) { setErr(true); setLocalUrl(null); return; }
+      objectUrl = url;
+      setLocalUrl(url);
+    }).catch(() => {
+      if (active) { setErr(true); setLocalUrl(null); }
+    });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [video.id, video.type, video.url]);
   useEffect(() => {
     const fn = e => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", fn);
@@ -199,7 +243,7 @@ function LocalPlayer({ video, onClose }) {
           <div>
             <div style={{ fontSize:13.5, fontWeight:600, color:"#d0d0e8" }}>{video.title}</div>
             <div style={{ fontSize:11, color:"#50507a", marginTop:2 }}>
-              {video.fileSize ? fmtSize(video.fileSize) : ""} · {video.fileMime || "video"} · cloud storage
+              {video.fileSize ? fmtSize(video.fileSize) : ""} · {video.fileMime || "video"} · {video.type === "local" ? "local file" : "cloud storage"}
             </div>
           </div>
           <button onClick={onClose} style={{ background:"#141424", border:"1px solid #1c1c2e",
@@ -210,9 +254,13 @@ function LocalPlayer({ video, onClose }) {
           {err
             ? <div style={{ color:"#ff6b8a", fontSize:13, textAlign:"center", padding:30 }}>
                 File not available.<br/>
-                <span style={{ color:"#50507a", fontSize:11.5 }}>This video is not stored in cloud storage.</span>
+                <span style={{ color:"#50507a", fontSize:11.5 }}>
+                  {video.type === "local"
+                    ? "This local file is only stored on your device."
+                    : "This video is not stored in cloud storage."}
+                </span>
               </div>
-            : <video src={video.url} controls autoPlay style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
+            : <video src={localUrl} controls autoPlay style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
           }
         </div>
       </div>
@@ -457,19 +505,18 @@ export default function VideoVault() {
     for (const file of files) {
       const id = uid();
       try {
-        const { storagePath, url } = await uploadLocalFile(file, id);
+        await saveLocalFileBlob(id, file);
         const thumb = await generateThumbnail(file);
         await withSaving(() => saveVideo({
           id, type:"local",
           title:file.name.replace(/\.[^.]+$/,"").replace(/[_-]+/g," "),
           channel:"Local File", thumbnail:thumb, thumbColor:null,
           fileSize:file.size, fileMime:file.type||"video/mp4",
-          url, storagePath,
           watched:false, priority:"none", categories:[], tags:[], note:"", addedAt:Date.now(),
         }));
       } catch (err) {
-        console.warn("Upload failed:", err);
-        setError("Could not upload one or more files.");
+        console.warn("Local save failed:", err);
+        setError("Could not save one or more local files.");
       }
     }
     setFileLoading(false);
@@ -477,8 +524,8 @@ export default function VideoVault() {
   };
 
   const handleDelete = async video => {
-    if (video.type === "local" && video.storagePath) {
-      await deleteLocalFile(video.storagePath);
+    if (video.type === "local") {
+      await deleteLocalFileBlob(video.id);
     }
     await withSaving(() => removeVideo(video.id));
   };
