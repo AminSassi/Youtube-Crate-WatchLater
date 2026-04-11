@@ -21,8 +21,14 @@ const firebaseApp = initializeApp(firebaseConfig);
 const db          = getFirestore(firebaseApp);
 const auth        = getAuth(firebaseApp);
 const provider    = new GoogleAuthProvider();
-const videosCol   = collection(db, "videos");
-const catsCol     = collection(db, "categories");
+
+function getUserCols(uid) {
+  const base = `users/${uid}`;
+  return {
+    videosCol: collection(db, base, "videos"),
+    catsCol:   collection(db, base, "categories"),
+  };
+}
 
 const LOCAL_DB    = "vidvault_local_files";
 const LOCAL_STORE = "files";
@@ -76,7 +82,7 @@ const LEGACY_KEY    = "vidvault_v2";
 const MIGRATED_FLAG = "vidvault_migrated_v1";
 
 // ── Migration: localStorage → Firestore (runs once) ──────────────────────────
-async function migrateFromLocalStorage() {
+async function migrateFromLocalStorage(videosCol, catsCol) {
   if (localStorage.getItem(MIGRATED_FLAG)) return;
   const raw = localStorage.getItem(LEGACY_KEY);
   if (!raw) { localStorage.setItem(MIGRATED_FLAG, "1"); return; }
@@ -137,10 +143,10 @@ function fmtSize(b) {
 function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
 
 // ── Firestore helpers ─────────────────────────────────────────────────────────
-async function saveVideo(video)   { await setDoc(doc(videosCol, video.id), video); }
-async function removeVideo(id)    { await deleteDoc(doc(videosCol, id)); }
-async function saveCategory(cat)  { await setDoc(doc(catsCol, cat.id), cat); }
-async function removeCategory(id) { await deleteDoc(doc(catsCol, id)); }
+async function saveVideo(videosCol, video)   { await setDoc(doc(videosCol, video.id), video); }
+async function removeVideo(videosCol, id)    { await deleteDoc(doc(videosCol, id)); }
+async function saveCategory(catsCol, cat)    { await setDoc(doc(catsCol, cat.id), cat); }
+async function removeCategory(catsCol, id)   { await deleteDoc(doc(catsCol, id)); }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const TABS = {
@@ -381,6 +387,7 @@ export default function VideoVault() {
   const [syncStatus, setSyncStatus] = useState("connecting");
   const [user,       setUser]       = useState(null);
   const [authError,  setAuthError]  = useState("");
+  const colsRef = useRef(null);
 
   const [tab, setTab]                     = useState("youtube");
   const [ytUrl, setYtUrl]                 = useState("");
@@ -418,13 +425,17 @@ export default function VideoVault() {
     if (!user) {
       setVideos([]);
       setCategories([]);
+      colsRef.current = null;
       setSyncStatus("sign-in");
       return;
     }
 
+    const { videosCol, catsCol } = getUserCols(user.uid);
+    colsRef.current = { videosCol, catsCol };
+
     setSyncStatus("connecting");
     setError("");
-    migrateFromLocalStorage().catch(e => console.warn("Migration:", e));
+    migrateFromLocalStorage(videosCol, catsCol).catch(e => console.warn("Migration:", e));
     const unsubVideos = onSnapshot(videosCol,
       snap => { setVideos(snap.docs.map(d => d.data()).sort((a,b) => b.addedAt - a.addedAt)); setSyncStatus("synced"); },
       err => {
@@ -448,9 +459,10 @@ export default function VideoVault() {
   }, []);
 
   const withSaving = async (fn) => {
+    if (!colsRef.current) { setError("Not signed in."); return; }
     setSyncStatus("saving");
     try {
-      await fn();
+      await fn(colsRef.current);
       setSyncStatus("synced");
     } catch (err) {
       console.warn("Save error:", err);
@@ -487,14 +499,14 @@ export default function VideoVault() {
     setYtLoading(true);
     try {
       const meta = await fetchOEmbed(videoId);
-      await withSaving(() => saveVideo({
+      await withSaving(({ videosCol }) => saveVideo(videosCol, {
         id:videoId, type:"youtube", title:meta.title, channel:meta.channel,
         thumbnail:`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
         url:`https://youtube.com/watch?v=${videoId}`,
         watched:false, priority:"none", categories:[], tags:[], note:"", addedAt:Date.now(),
       }));
       setYtUrl("");
-    } catch { setError("Couldn't fetch video info."); }
+    } catch (e) { console.warn("YT add error:", e); setError("Couldn't fetch video info."); }
     setYtLoading(false);
   };
 
@@ -502,7 +514,7 @@ export default function VideoVault() {
     setError("");
     if (videos.find(v => v.url === url)) { setError("Already in your vault"); return; }
     setSocialLoading(true);
-    await withSaving(() => saveVideo({
+    await withSaving(({ videosCol }) => saveVideo(videosCol, {
       id:uid(), type:platform, title, url,
       channel: platform==="instagram" ? "Instagram" : "Facebook",
       thumbnail:null, thumbColor: platform==="instagram" ? "#833ab4" : "#1877f2",
@@ -520,7 +532,7 @@ export default function VideoVault() {
       try {
         await saveLocalFileBlob(id, file);
         const thumb = await generateThumbnail(file);
-        await withSaving(() => saveVideo({
+        await withSaving(({ videosCol }) => saveVideo(videosCol, {
           id, type:"local",
           title:file.name.replace(/\.[^.]+$/,"").replace(/[_-]+/g," "),
           channel:"Local File", thumbnail:thumb, thumbColor:null,
@@ -537,30 +549,28 @@ export default function VideoVault() {
   };
 
   const handleDelete = async video => {
-    if (video.type === "local") {
-      await deleteLocalFileBlob(video.id);
-    }
-    await withSaving(() => removeVideo(video.id));
+    if (video.type === "local") await deleteLocalFileBlob(video.id);
+    await withSaving(({ videosCol }) => removeVideo(videosCol, video.id));
   };
 
   const updateVideo = async (id, fields) => {
     const video = videos.find(v => v.id === id);
     if (!video) return;
-    await withSaving(() => saveVideo({ ...video, ...fields }));
+    await withSaving(({ videosCol }) => saveVideo(videosCol, { ...video, ...fields }));
   };
 
   const addCategory = async () => {
     const name = newCatName.trim();
     if (!name || categories.find(c => c.name.toLowerCase()===name.toLowerCase())) return;
     const cat = { id:Date.now().toString(), name, color:CAT_COLORS[categories.length % CAT_COLORS.length] };
-    await withSaving(() => saveCategory(cat));
+    await withSaving(({ catsCol }) => saveCategory(catsCol, cat));
     setNewCatName(""); setShowCatInput(false);
   };
   const deleteCategoryFn = async id => {
     const affected = videos.filter(v => v.categories.includes(id));
-    await withSaving(async () => {
-      await removeCategory(id);
-      for (const v of affected) await saveVideo({ ...v, categories:v.categories.filter(c=>c!==id) });
+    await withSaving(async ({ videosCol, catsCol }) => {
+      await removeCategory(catsCol, id);
+      for (const v of affected) await saveVideo(videosCol, { ...v, categories:v.categories.filter(c=>c!==id) });
     });
     if (catFilter === id) setCatFilter("all");
   };
@@ -570,19 +580,19 @@ export default function VideoVault() {
     const cats = video.categories.includes(catId)
       ? video.categories.filter(c=>c!==catId)
       : [...video.categories, catId];
-    await withSaving(() => saveVideo({ ...video, categories:cats }));
+    await withSaving(({ videosCol }) => saveVideo(videosCol, { ...video, categories:cats }));
   };
   const addTag = async (vid, tag) => {
     const clean = tag.replace(/^#+/,"").trim().toLowerCase().replace(/\s+/g,"-");
     if (!clean) return;
     const video = videos.find(v => v.id === vid);
     if (!video || video.tags.includes(clean)) return;
-    await withSaving(() => saveVideo({ ...video, tags:[...video.tags, clean] }));
+    await withSaving(({ videosCol }) => saveVideo(videosCol, { ...video, tags:[...video.tags, clean] }));
   };
   const removeTag = async (vid, tag) => {
     const video = videos.find(v => v.id === vid);
     if (!video) return;
-    await withSaving(() => saveVideo({ ...video, tags:video.tags.filter(t=>t!==tag) }));
+    await withSaving(({ videosCol }) => saveVideo(videosCol, { ...video, tags:video.tags.filter(t=>t!==tag) }));
   };
 
   const filtered = useMemo(() => {
