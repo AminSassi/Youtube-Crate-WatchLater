@@ -4,6 +4,13 @@ import {
   getFirestore, collection, doc, setDoc, deleteDoc,
   onSnapshot, writeBatch, getDocs
 } from "firebase/firestore";
+import {
+  getAuth, GoogleAuthProvider, signInWithPopup, signOut,
+  onAuthStateChanged
+} from "firebase/auth";
+import {
+  getStorage, ref, uploadBytes, getDownloadURL, deleteObject
+} from "firebase/storage";
 
 // ── Firebase config (env variables) ──────────────────────────────────────────
 const firebaseConfig = {
@@ -16,50 +23,33 @@ const firebaseConfig = {
 };
 const firebaseApp = initializeApp(firebaseConfig);
 const db          = getFirestore(firebaseApp);
+const auth        = getAuth(firebaseApp);
+const storage     = getStorage(firebaseApp);
+const provider    = new GoogleAuthProvider();
 const videosCol   = collection(db, "videos");
 const catsCol     = collection(db, "categories");
+
+async function uploadLocalFile(file, id) {
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const path = `local_videos/${id}/${safeName}`;
+  const storageRef = ref(storage, path);
+  await uploadBytes(storageRef, file);
+  const url = await getDownloadURL(storageRef);
+  return { storagePath: path, url };
+}
+
+async function deleteLocalFile(path) {
+  if (!path) return;
+  try {
+    await deleteObject(ref(storage, path));
+  } catch (err) {
+    console.warn("Storage delete failed:", err);
+  }
+}
 
 // ── localStorage migration key ────────────────────────────────────────────────
 const LEGACY_KEY    = "vidvault_v2";
 const MIGRATED_FLAG = "vidvault_migrated_v1";
-
-// ── IndexedDB (local file blobs only) ────────────────────────────────────────
-const DB_NAME    = "vidvault_files_v1";
-const STORE_NAME = "blobs";
-
-function openIDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE_NAME);
-    req.onsuccess  = e => resolve(e.target.result);
-    req.onerror    = () => reject(req.error);
-  });
-}
-async function storeBlob(id, blob) {
-  const db = await openIDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite");
-    tx.objectStore(STORE_NAME).put(blob, id);
-    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
-  });
-}
-async function getBlob(id) {
-  const db = await openIDB();
-  return new Promise((resolve, reject) => {
-    const tx  = db.transaction(STORE_NAME, "readonly");
-    const req = tx.objectStore(STORE_NAME).get(id);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror   = () => reject(req.error);
-  });
-}
-async function deleteBlob(id) {
-  const db = await openIDB();
-  return new Promise(resolve => {
-    const tx = db.transaction(STORE_NAME, "readwrite");
-    tx.objectStore(STORE_NAME).delete(id);
-    tx.oncomplete = resolve;
-  });
-}
 
 // ── Migration: localStorage → Firestore (runs once) ──────────────────────────
 async function migrateFromLocalStorage() {
@@ -188,16 +178,10 @@ const Icons = {
 
 // ── Local Player Modal ────────────────────────────────────────────────────────
 function LocalPlayer({ video, onClose }) {
-  const [blobUrl, setBlobUrl] = useState(null);
-  const [err, setErr]         = useState(false);
+  const [err, setErr] = useState(false);
   useEffect(() => {
-    let url;
-    getBlob(video.id).then(blob => {
-      if (!blob) { setErr(true); return; }
-      url = URL.createObjectURL(blob); setBlobUrl(url);
-    }).catch(() => setErr(true));
-    return () => { if (url) URL.revokeObjectURL(url); };
-  }, [video.id]);
+    setErr(!video.url);
+  }, [video.url]);
   useEffect(() => {
     const fn = e => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", fn);
@@ -215,7 +199,7 @@ function LocalPlayer({ video, onClose }) {
           <div>
             <div style={{ fontSize:13.5, fontWeight:600, color:"#d0d0e8" }}>{video.title}</div>
             <div style={{ fontSize:11, color:"#50507a", marginTop:2 }}>
-              {video.fileSize ? fmtSize(video.fileSize) : ""} · {video.fileMime || "video"} · device only
+              {video.fileSize ? fmtSize(video.fileSize) : ""} · {video.fileMime || "video"} · cloud storage
             </div>
           </div>
           <button onClick={onClose} style={{ background:"#141424", border:"1px solid #1c1c2e",
@@ -225,15 +209,10 @@ function LocalPlayer({ video, onClose }) {
         <div style={{ background:"#000", aspectRatio:"16/9", display:"flex", alignItems:"center", justifyContent:"center" }}>
           {err
             ? <div style={{ color:"#ff6b8a", fontSize:13, textAlign:"center", padding:30 }}>
-                File not found on this device.<br/>
-                <span style={{ color:"#50507a", fontSize:11.5 }}>Local files are stored per-device and can't sync to the cloud.</span>
+                File not available.<br/>
+                <span style={{ color:"#50507a", fontSize:11.5 }}>This video is not stored in cloud storage.</span>
               </div>
-            : blobUrl
-              ? <video src={blobUrl} controls autoPlay style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
-              : <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:10, color:"#30304a" }}>
-                  <div className="spinner" style={{ width:28, height:28, borderWidth:3 }}/>
-                  <span style={{ fontSize:12 }}>Loading…</span>
-                </div>
+            : <video src={video.url} controls autoPlay style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
           }
         </div>
       </div>
@@ -352,6 +331,8 @@ export default function VideoVault() {
   const [videos,     setVideos]     = useState([]);
   const [categories, setCategories] = useState([]);
   const [syncStatus, setSyncStatus] = useState("connecting");
+  const [user,       setUser]       = useState(null);
+  const [authError,  setAuthError]  = useState("");
 
   const [tab, setTab]                     = useState("youtube");
   const [ytUrl, setYtUrl]                 = useState("");
@@ -374,8 +355,25 @@ export default function VideoVault() {
   const fileRef    = useRef(null);
   const sortRef    = useRef(null);
 
-  // ── Firestore listeners + migration ──────────────────────────────────────
+  // ── Firebase Auth + Firestore listeners ─────────────────────────────────
   useEffect(() => {
+    const unsubAuth = onAuthStateChanged(auth, u => {
+      setUser(u);
+      if (!u) {
+        setSyncStatus("sign-in");
+      }
+    });
+    return () => unsubAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setVideos([]);
+      setCategories([]);
+      setSyncStatus("sign-in");
+      return;
+    }
+
     setSyncStatus("connecting");
     migrateFromLocalStorage().catch(e => console.warn("Migration:", e));
     const unsubVideos = onSnapshot(videosCol,
@@ -384,7 +382,7 @@ export default function VideoVault() {
     );
     const unsubCats = onSnapshot(catsCol, snap => setCategories(snap.docs.map(d => d.data())), () => {});
     return () => { unsubVideos(); unsubCats(); };
-  }, []);
+  }, [user]);
 
   useEffect(() => { setFilter("all"); setCatFilter("all"); setPrioFilter("all"); setSearch(""); setError(""); }, [tab]);
   useEffect(() => { if (tab==="youtube") setTimeout(() => ytInputRef.current?.focus(), 80); }, [tab]);
@@ -398,6 +396,24 @@ export default function VideoVault() {
     setSyncStatus("saving");
     try { await fn(); setSyncStatus("synced"); }
     catch { setSyncStatus("error"); }
+  };
+
+  const handleSignIn = async () => {
+    setAuthError("");
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.warn("Auth sign-in error:", error);
+      setAuthError("Could not sign in. Try again.");
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.warn("Auth sign-out error:", error);
+    }
   };
 
   const handleAddYT = async () => {
@@ -441,23 +457,29 @@ export default function VideoVault() {
     for (const file of files) {
       const id = uid();
       try {
-        await storeBlob(id, file);
+        const { storagePath, url } = await uploadLocalFile(file, id);
         const thumb = await generateThumbnail(file);
         await withSaving(() => saveVideo({
           id, type:"local",
           title:file.name.replace(/\.[^.]+$/,"").replace(/[_-]+/g," "),
           channel:"Local File", thumbnail:thumb, thumbColor:null,
           fileSize:file.size, fileMime:file.type||"video/mp4",
+          url, storagePath,
           watched:false, priority:"none", categories:[], tags:[], note:"", addedAt:Date.now(),
         }));
-      } catch {}
+      } catch (err) {
+        console.warn("Upload failed:", err);
+        setError("Could not upload one or more files.");
+      }
     }
     setFileLoading(false);
     e.target.value = "";
   };
 
   const handleDelete = async video => {
-    if (video.type === "local") deleteBlob(video.id).catch(() => {});
+    if (video.type === "local" && video.storagePath) {
+      await deleteLocalFile(video.storagePath);
+    }
     await withSaving(() => removeVideo(video.id));
   };
 
@@ -525,6 +547,29 @@ export default function VideoVault() {
   const allCurList = videos.filter(v => tab==="youtube" ? (v.type==="youtube"||!v.type) : v.type===tab);
   const curWatched = allCurList.filter(v=>v.watched).length;
   const t = TABS[tab];
+
+  if (!user) {
+    return (
+      <div style={{ minHeight:"100vh", background:"#080810", color:"#e2e2f0",
+        fontFamily:"'DM Sans',system-ui,sans-serif", display:"flex", alignItems:"center",
+        justifyContent:"center", padding:24 }}>
+        <div style={{ maxWidth:420, width:"100%", textAlign:"center", border:"1px solid #1c1c2e",
+          borderRadius:22, padding:36, background:"#0d0d16" }}>
+          <div style={{ fontSize:26, fontWeight:800, marginBottom:10 }}>Sign in to Video Vault</div>
+          <div style={{ color:"#9090b8", marginBottom:24 }}>Your saved videos are stored in Firestore. Please sign in with Google to access them.</div>
+          <button onClick={handleSignIn} style={{ width:"100%", padding:"12px 18px", borderRadius:12,
+            border:"none", background:"linear-gradient(135deg,#4c8dff,#5aa4ff)", color:"white",
+            fontSize:14, fontWeight:700, cursor:"pointer" }}>
+            Sign in with Google
+          </button>
+          {authError && <div style={{ marginTop:16, color:"#ff6b8a", fontSize:13 }}>{authError}</div>}
+          <div style={{ marginTop:22, fontSize:12, color:"#50507a" }}>
+            If you're already signed in, reload the page after signing in.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight:"100vh", background:"#080810", color:"#e2e2f0",
@@ -616,6 +661,11 @@ export default function VideoVault() {
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
             <SyncBadge status={syncStatus} />
+            {user && (
+              <button className="ghost-btn" onClick={handleSignOut} style={{ whiteSpace:"nowrap" }}>
+                Sign out
+              </button>
+            )}
             {videos.length > 0 && (
               <div style={{ fontSize:12, color:"#50507a", background:"#0f0f1a",
                 border:"1px solid #1c1c2e", borderRadius:9, padding:"5px 14px" }}>
