@@ -423,12 +423,19 @@ export default function VideoVault() {
     }
 
     setSyncStatus("connecting");
+    setError("");
     migrateFromLocalStorage().catch(e => console.warn("Migration:", e));
     const unsubVideos = onSnapshot(videosCol,
       snap => { setVideos(snap.docs.map(d => d.data()).sort((a,b) => b.addedAt - a.addedAt)); setSyncStatus("synced"); },
-      () => setSyncStatus("error")
+      err => {
+        console.warn("Firestore snapshot error:", err);
+        setSyncStatus("error");
+        setError("Cloud sync failed. Please sign in and check Firebase permissions.");
+      }
     );
-    const unsubCats = onSnapshot(catsCol, snap => setCategories(snap.docs.map(d => d.data())), () => {});
+    const unsubCats = onSnapshot(catsCol, snap => setCategories(snap.docs.map(d => d.data())), err => {
+      console.warn("Firestore categories snapshot error:", err);
+    });
     return () => { unsubVideos(); unsubCats(); };
   }, [user]);
 
@@ -442,8 +449,14 @@ export default function VideoVault() {
 
   const withSaving = async (fn) => {
     setSyncStatus("saving");
-    try { await fn(); setSyncStatus("synced"); }
-    catch { setSyncStatus("error"); }
+    try {
+      await fn();
+      setSyncStatus("synced");
+    } catch (err) {
+      console.warn("Save error:", err);
+      setSyncStatus("error");
+      setError("Save failed. Check connection and Firebase permissions.");
+    }
   };
 
   const handleSignIn = async () => {
