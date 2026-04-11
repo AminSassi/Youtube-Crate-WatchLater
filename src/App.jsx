@@ -458,20 +458,29 @@ export default function VideoVault() {
 
     setSyncStatus("connecting");
     setError("");
-    migrateGlobalToUser(videosCol, catsCol).catch(e => console.warn("Global migration:", e));
-    migrateFromLocalStorage(videosCol, catsCol).catch(e => console.warn("Migration:", e));
-    const unsubVideos = onSnapshot(videosCol,
-      snap => { setVideos(snap.docs.map(d => d.data()).sort((a,b) => b.addedAt - a.addedAt)); setSyncStatus("synced"); },
-      err => {
-        console.warn("Firestore snapshot error:", err);
-        setSyncStatus("error");
-        setError("Cloud sync failed. Please sign in and check Firebase permissions.");
-      }
-    );
-    const unsubCats = onSnapshot(catsCol, snap => setCategories(snap.docs.map(d => d.data())), err => {
-      console.warn("Firestore categories snapshot error:", err);
-    });
-    return () => { unsubVideos(); unsubCats(); };
+
+    // Listen to both global + user collections and merge
+    const globalVideosCol = collection(db, "videos");
+    const globalCatsCol   = collection(db, "categories");
+
+    let userVids = [], globalVids = [], userCats = [], globalCats = [];
+
+    const merge = () => {
+      const allVids = [...globalVids];
+      userVids.forEach(v => { if (!allVids.find(x => x.id === v.id)) allVids.push(v); });
+      setVideos(allVids.sort((a, b) => b.addedAt - a.addedAt));
+      const allCats = [...globalCats];
+      userCats.forEach(c => { if (!allCats.find(x => x.id === c.id)) allCats.push(c); });
+      setCategories(allCats);
+      setSyncStatus("synced");
+    };
+
+    const unsubUserVideos  = onSnapshot(videosCol,      snap => { userVids   = snap.docs.map(d => d.data()); merge(); }, err => { console.warn("user videos:", err); setSyncStatus("error"); });
+    const unsubGlobalVideos = onSnapshot(globalVideosCol, snap => { globalVids = snap.docs.map(d => d.data()); merge(); }, err => { console.warn("global videos:", err); });
+    const unsubUserCats    = onSnapshot(catsCol,         snap => { userCats   = snap.docs.map(d => d.data()); merge(); }, err => { console.warn("user cats:", err); });
+    const unsubGlobalCats  = onSnapshot(globalCatsCol,   snap => { globalCats = snap.docs.map(d => d.data()); merge(); }, err => { console.warn("global cats:", err); });
+
+    return () => { unsubUserVideos(); unsubGlobalVideos(); unsubUserCats(); unsubGlobalCats(); };
   }, [user]);
 
   useEffect(() => { setFilter("all"); setCatFilter("all"); setPrioFilter("all"); setSearch(""); setError(""); }, [tab]);
