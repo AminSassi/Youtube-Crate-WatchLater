@@ -78,8 +78,31 @@ async function deleteLocalFileBlob(id) {
 }
 
 // ── localStorage migration key ────────────────────────────────────────────────
-const LEGACY_KEY    = "vidvault_v2";
-const MIGRATED_FLAG = "vidvault_migrated_v1";
+const LEGACY_KEY       = "vidvault_v2";
+const MIGRATED_FLAG    = "vidvault_migrated_v1";
+const GLOBAL_MIG_FLAG  = "vidvault_global_migrated_v1";
+
+// ── Migration: global /videos + /categories → users/{uid}/... (runs once) ────
+async function migrateGlobalToUser(videosCol, catsCol) {
+  if (localStorage.getItem(GLOBAL_MIG_FLAG)) return;
+  const [oldVideos, oldCats] = await Promise.all([
+    getDocs(collection(db, "videos")),
+    getDocs(collection(db, "categories")),
+  ]);
+  if (oldVideos.empty && oldCats.empty) { localStorage.setItem(GLOBAL_MIG_FLAG, "1"); return; }
+  const existing = await getDocs(videosCol);
+  if (!existing.empty) { localStorage.setItem(GLOBAL_MIG_FLAG, "1"); return; }
+  const allDocs = [
+    ...oldVideos.docs.map(d => ({ col: videosCol, data: d.data() })),
+    ...oldCats.docs.map(d => ({ col: catsCol,   data: d.data() })),
+  ];
+  for (let i = 0; i < allDocs.length; i += 400) {
+    const batch = writeBatch(db);
+    allDocs.slice(i, i + 400).forEach(({ col, data }) => batch.set(doc(col, data.id), data));
+    await batch.commit();
+  }
+  localStorage.setItem(GLOBAL_MIG_FLAG, "1");
+}
 
 // ── Migration: localStorage → Firestore (runs once) ──────────────────────────
 async function migrateFromLocalStorage(videosCol, catsCol) {
@@ -435,6 +458,7 @@ export default function VideoVault() {
 
     setSyncStatus("connecting");
     setError("");
+    migrateGlobalToUser(videosCol, catsCol).catch(e => console.warn("Global migration:", e));
     migrateFromLocalStorage(videosCol, catsCol).catch(e => console.warn("Migration:", e));
     const unsubVideos = onSnapshot(videosCol,
       snap => { setVideos(snap.docs.map(d => d.data()).sort((a,b) => b.addedAt - a.addedAt)); setSyncStatus("synced"); },
