@@ -84,11 +84,13 @@ const GLOBAL_MIG_FLAG  = "vidvault_global_migrated_v1";
 
 // ── Migration: global /videos + /categories → users/{uid}/... (runs once) ────
 async function migrateGlobalToUser(videosCol, catsCol) {
+  console.log("[migration] starting global→user migration...");
   const [oldVideos, oldCats] = await Promise.all([
     getDocs(collection(db, "videos")),
     getDocs(collection(db, "categories")),
   ]);
-  if (oldVideos.empty && oldCats.empty) { localStorage.setItem(GLOBAL_MIG_FLAG, "1"); return; }
+  console.log(`[migration] found ${oldVideos.size} videos, ${oldCats.size} categories in global collections`);
+  if (oldVideos.empty && oldCats.empty) { console.log("[migration] nothing to migrate"); return; }
   const allDocs = [
     ...oldVideos.docs.map(d => ({ col: videosCol, data: d.data() })),
     ...oldCats.docs.map(d => ({ col: catsCol,   data: d.data() })),
@@ -98,6 +100,7 @@ async function migrateGlobalToUser(videosCol, catsCol) {
     allDocs.slice(i, i + 400).forEach(({ col, data }) => batch.set(doc(col, data.id), data));
     await batch.commit();
   }
+  console.log("[migration] done!");
   localStorage.setItem(GLOBAL_MIG_FLAG, "1");
 }
 
