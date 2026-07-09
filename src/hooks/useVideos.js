@@ -125,7 +125,9 @@ export function useVideos(user) {
   }, [withSaving]);
 
   const deleteVideo = useCallback(async (video) => {
-    if (video.type === "local") await deleteLocalFileBlob(video.id);
+    if (video.type === "local") {
+      try { await deleteLocalFileBlob(video.id); } catch { /* local blob already gone */ }
+    }
     await withSaving(({ videosCol }) => removeVideo(videosCol, video.id));
   }, [withSaving]);
 

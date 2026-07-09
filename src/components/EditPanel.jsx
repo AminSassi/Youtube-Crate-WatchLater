@@ -1,20 +1,29 @@
-import { useState, memo, useCallback } from "react";
-import { PRIORITIES } from "../utils/constants";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
+import { PRIORITIES, MESSAGE_TIMEOUT_MS } from "../utils/constants";
 import { Icons } from "../utils/icons";
-import { MESSAGE_TIMEOUT_MS } from "../utils/constants";
 
 export const EditPanel = memo(function EditPanel({
   video, categories, onPriority, onToggleCat, onAddTag, onNote, onThumbnail,
 }) {
   const [tagInput, setTagInput] = useState("");
   const [thumbMsg, setThumbMsg] = useState("");
+  const thumbTimerRef = useRef(null);
+  const readerRef = useRef(null);
   const isSocial = video.type === "instagram" || video.type === "facebook";
+
+  useEffect(() => {
+    return () => {
+      if (thumbTimerRef.current) clearTimeout(thumbTimerRef.current);
+      if (readerRef.current) readerRef.current.abort();
+    };
+  }, []);
 
   const commitTag = useCallback(() => {
     if (tagInput.trim()) { onAddTag(tagInput); setTagInput(""); }
   }, [tagInput, onAddTag]);
 
   const handlePasteThumb = useCallback(async () => {
+    if (thumbTimerRef.current) clearTimeout(thumbTimerRef.current);
     setThumbMsg("");
     try {
       const items = await navigator.clipboard.read();
@@ -23,10 +32,12 @@ export const EditPanel = memo(function EditPanel({
         if (imgType) {
           const blob = await item.getType(imgType);
           const reader = new FileReader();
+          readerRef.current = reader;
           reader.onload = () => {
+            readerRef.current = null;
             onThumbnail(reader.result);
             setThumbMsg("\u2713 Thumbnail saved!");
-            setTimeout(() => setThumbMsg(""), MESSAGE_TIMEOUT_MS);
+            thumbTimerRef.current = setTimeout(() => setThumbMsg(""), MESSAGE_TIMEOUT_MS);
           };
           reader.readAsDataURL(blob);
           return;

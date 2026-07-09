@@ -1,27 +1,28 @@
-import { useState, useEffect, memo } from "react";
-import { getLocalFileURL } from "../services/indexedDB";
+import { useState, useEffect, useRef, memo } from "react";
+import { getLocalFileBlob } from "../services/indexedDB";
 import { fmtSize } from "../utils/helpers";
 import { Icons } from "../utils/icons";
 
 export const LocalPlayer = memo(function LocalPlayer({ video, onClose }) {
   const [localUrl, setLocalUrl] = useState(video.type === "local" ? null : video.url);
   const [err, setErr] = useState(video.type === "local" ? false : !video.url);
+  const urlRef = useRef(null);
 
   useEffect(() => {
     if (video.type !== "local") return;
     let active = true;
-    let objectUrl = null;
-    getLocalFileURL(video.id).then(url => {
+    getLocalFileBlob(video.id).then(blob => {
       if (!active) return;
-      if (!url) { setErr(true); setLocalUrl(null); return; }
-      objectUrl = url;
-      setLocalUrl(url);
+      if (!blob) { setErr(true); setLocalUrl(null); return; }
+      const objectUrl = URL.createObjectURL(blob);
+      urlRef.current = objectUrl;
+      setLocalUrl(objectUrl);
     }).catch(() => {
       if (active) { setErr(true); setLocalUrl(null); }
     });
     return () => {
       active = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null; }
     };
   }, [video.id, video.type]);
 
