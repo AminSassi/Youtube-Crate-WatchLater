@@ -1,5 +1,3 @@
-import { memo } from "react";
-
 const SYNC_CONFIG = {
   connecting: { color: "#50507a", label: "Connecting\u2026",           dot: "#50507a" },
   migrating:  { color: "#ffb830", label: "Restoring your videos\u2026", dot: "#ffb830" },
@@ -9,7 +7,7 @@ const SYNC_CONFIG = {
   "sign-in":  { color: "#50507a", label: "Not signed in",          dot: "#50507a" },
 };
 
-export const SyncBadge = memo(function SyncBadge({ status }) {
+export function SyncBadge({ status }) {
   const cfg = SYNC_CONFIG[status] || SYNC_CONFIG.connecting;
   return (
     <div style={{
@@ -25,4 +23,4 @@ export const SyncBadge = memo(function SyncBadge({ status }) {
       {cfg.label}
     </div>
   );
-});
+}

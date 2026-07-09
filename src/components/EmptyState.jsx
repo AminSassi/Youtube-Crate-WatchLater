@@ -1,7 +1,6 @@
-import { memo } from "react";
 import { TABS } from "../utils/constants";
 
-export const EmptyState = memo(function EmptyState({ tab, syncStatus, hasFilters }) {
+export function EmptyState({ tab, syncStatus, hasFilters }) {
   const t = TABS[tab];
 
   if (syncStatus === "connecting") {
@@ -39,4 +38,4 @@ export const EmptyState = memo(function EmptyState({ tab, syncStatus, hasFilters
       <p>{message}</p>
     </div>
   );
-});
+}

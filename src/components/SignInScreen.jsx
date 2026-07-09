@@ -1,6 +1,4 @@
-import { memo } from "react";
-
-export const SignInScreen = memo(function SignInScreen({ onSignIn, authError }) {
+export function SignInScreen({ onSignIn, authError }) {
   return (
     <div style={{
       minHeight: "100vh", background: "#080810", color: "#e2e2f0",
@@ -36,4 +34,4 @@ export const SignInScreen = memo(function SignInScreen({ onSignIn, authError }) 
       </div>
     </div>
   );
-});
+}

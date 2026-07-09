@@ -1,4 +1,3 @@
-/* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useRef, useCallback } from "react";
 import { getUserCols, subscribeToUserData, saveVideo, removeVideo, saveCategory, removeCategory } from "../services/firebase";
 import { saveLocalFileBlob, deleteLocalFileBlob } from "../services/indexedDB";
@@ -52,7 +51,13 @@ export function useVideos(user) {
     } catch (err) {
       console.warn("Save error:", err);
       setSyncStatus("error");
-      setError("Save failed. Check connection and Firebase permissions.");
+      if (err.code === "permission-denied") {
+        setError("Permission denied. Check your Firebase security rules.");
+      } else if (err.code === "unavailable") {
+        setError("Service unavailable. Check your internet connection.");
+      } else {
+        setError("Couldn't save your changes. Check your connection and try again.");
+      }
     }
   }, []);
 
@@ -61,21 +66,25 @@ export function useVideos(user) {
     const trimmed = url.trim();
     if (!trimmed) return;
     const videoId = extractYouTubeId(trimmed);
-    if (!videoId) { setError("Paste a valid YouTube URL"); return; }
-    if (videos.find(v => v.id === videoId)) { setError("Already in your vault"); return; }
+    if (!videoId) { setError("That doesn't look like a YouTube URL. Try pasting a link from youtube.com or youtu.be."); return; }
+    if (videos.find(v => v.id === videoId)) { setError("This video is already in your vault."); return; }
 
-    const meta = await fetchYouTubeMeta(videoId);
-    await withSaving(({ videosCol }) => saveVideo(videosCol, {
-      id: videoId, type: "youtube", title: meta.title, channel: meta.channel,
-      thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
-      url: `https://youtube.com/watch?v=${videoId}`,
-      watched: false, priority: "none", categories: [], tags: [], note: "", addedAt: Date.now(),
-    }));
+    try {
+      const meta = await fetchYouTubeMeta(videoId);
+      await withSaving(({ videosCol }) => saveVideo(videosCol, {
+        id: videoId, type: "youtube", title: meta.title, channel: meta.channel,
+        thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+        url: `https://youtube.com/watch?v=${videoId}`,
+        watched: false, priority: "none", categories: [], tags: [], note: "", addedAt: Date.now(),
+      }));
+    } catch {
+      setError("Couldn't fetch video info. Check your connection and try again.");
+    }
   }, [videos, withSaving]);
 
   const addSocial = useCallback(async (platform, url, title) => {
     setError("");
-    if (videos.find(v => v.url === url)) { setError("Already in your vault"); return; }
+    if (videos.find(v => v.url === url)) { setError("This link is already in your vault."); return; }
     await withSaving(({ videosCol }) => saveVideo(videosCol, {
       id: uid(), type: platform, title, url,
       channel: platform === "instagram" ? "Instagram" : "Facebook",
@@ -87,9 +96,11 @@ export function useVideos(user) {
   const addLocalFiles = useCallback(async (files) => {
     setError("");
     for (const file of files) {
-      if (file.size > MAX_FILE_SIZE) { setError("File too large (max 500MB)"); continue; }
+      if (file.size === 0) { setError(`${file.name} is empty. Please select a valid video file.`); continue; }
+      if (file.size > MAX_FILE_SIZE) { setError(`${file.name} is too large. Maximum file size is 500MB.`); continue; }
       if (file.type && !ALLOWED_VIDEO_TYPES.includes(file.type) && !file.type.startsWith("video/")) {
-        setError("Unsupported file format"); continue;
+        setError(`${file.name} is not a supported video format. Use MP4, WebM, or MOV.`);
+        continue;
       }
       const id = uid();
       try {
@@ -104,7 +115,11 @@ export function useVideos(user) {
         }));
       } catch (err) {
         console.warn("Local save failed:", err);
-        setError("Could not save one or more local files.");
+        if (err.name === "QuotaExceededError") {
+          setError("Your browser storage is full. Delete some files and try again.");
+        } else {
+          setError(`Couldn't save ${file.name}. Check your connection and try again.`);
+        }
       }
     }
   }, [withSaving]);
@@ -117,8 +132,28 @@ export function useVideos(user) {
   const updateVideo = useCallback(async (id, fields) => {
     const video = videos.find(v => v.id === id);
     if (!video) return;
-    await withSaving(({ videosCol }) => saveVideo(videosCol, { ...video, ...fields }));
-  }, [videos, withSaving]);
+
+    // Optimistic update: apply change immediately
+    const optimistic = { ...video, ...fields };
+    setVideos(prev => prev.map(v => v.id === id ? optimistic : v));
+
+    try {
+      if (!colsRef.current) throw new Error("Not signed in");
+      setSyncStatus("saving");
+      await saveVideo(colsRef.current.videosCol, optimistic);
+      setSyncStatus("synced");
+    } catch (err) {
+      console.warn("Save error:", err);
+      // Revert optimistic update
+      setVideos(prev => prev.map(v => v.id === id ? video : v));
+      setSyncStatus("error");
+      if (err.code === "permission-denied") {
+        setError("Permission denied. Check your Firebase security rules.");
+      } else {
+        setError("Couldn't save your changes. Check your connection and try again.");
+      }
+    }
+  }, [videos]);
 
   const addCategory = useCallback(async (name) => {
     if (!name || categories.find(c => c.name.toLowerCase() === name.toLowerCase())) return;

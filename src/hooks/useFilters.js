@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
+import { useDebounce } from "./useDebounce";
 
 export function useFilters(videos) {
   const [tab, setTab] = useState("youtube");
@@ -8,6 +9,8 @@ export function useFilters(videos) {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState("newest");
   const [prevTab, setPrevTab] = useState(tab);
+
+  const debouncedSearch = useDebounce(search, 300);
 
   if (tab !== prevTab) {
     setPrevTab(tab);
@@ -23,8 +26,8 @@ export function useFilters(videos) {
     if (filter === "unwatched") list = list.filter(v => !v.watched);
     if (catFilter !== "all")    list = list.filter(v => v.categories.includes(catFilter));
     if (prioFilter !== "all")   list = list.filter(v => v.priority === prioFilter);
-    if (search) {
-      const q = search.toLowerCase();
+    if (debouncedSearch) {
+      const q = debouncedSearch.toLowerCase();
       list = list.filter(v => v.title.toLowerCase().includes(q) || v.channel.toLowerCase().includes(q) || v.tags.some(t => t.includes(q)));
     }
     const ORD = { urgent: 0, soon: 1, someday: 2, none: 3 };
@@ -33,7 +36,7 @@ export function useFilters(videos) {
     if (sortBy === "priority") list.sort((a, b) => ORD[a.priority] - ORD[b.priority]);
     if (sortBy === "title")    list.sort((a, b) => a.title.localeCompare(b.title));
     return list;
-  }, [videos, tab, filter, catFilter, prioFilter, search, sortBy]);
+  }, [videos, tab, filter, catFilter, prioFilter, debouncedSearch, sortBy]);
 
   const allCurList = useMemo(() =>
     videos.filter(v => tab === "youtube" ? (v.type === "youtube" || !v.type) : v.type === tab),
