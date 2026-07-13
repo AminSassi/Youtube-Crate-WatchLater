@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
-import { onAuthChange, signInWithGoogle, signOutUser } from "../services/firebase";
+import { onAuthChange, signInWithGoogle, signOutUser, isConfigured } from "../services/firebase";
 
 export function useAuth() {
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(isConfigured);
 
   useEffect(() => {
+    if (!isConfigured) return;
     const unsub = onAuthChange(u => {
       setUser(u);
       setLoading(false);
@@ -16,6 +17,10 @@ export function useAuth() {
 
   const signIn = useCallback(async () => {
     setAuthError("");
+    if (!isConfigured) {
+      setAuthError("Firebase is not configured. Create a .env file with your Firebase credentials.");
+      return;
+    }
     try {
       await signInWithGoogle();
     } catch (err) {

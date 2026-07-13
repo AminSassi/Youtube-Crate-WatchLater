@@ -16,10 +16,18 @@ const firebaseConfig = {
   appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-const firebaseApp = initializeApp(firebaseConfig);
-export const db     = getFirestore(firebaseApp);
-export const auth   = getAuth(firebaseApp);
-const provider     = new GoogleAuthProvider();
+const isConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
+
+let firebaseApp, db, auth, provider;
+
+if (isConfigured) {
+  firebaseApp = initializeApp(firebaseConfig);
+  db          = getFirestore(firebaseApp);
+  auth        = getAuth(firebaseApp);
+  provider    = new GoogleAuthProvider();
+}
+
+export { db, auth, provider, isConfigured };
 
 export function getUserCols(uid) {
   const base = `users/${uid}`;

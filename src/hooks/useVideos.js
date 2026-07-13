@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { getUserCols, subscribeToUserData, saveVideo, removeVideo, saveCategory, removeCategory } from "../services/firebase";
+import { getUserCols, subscribeToUserData, saveVideo, removeVideo, saveCategory, removeCategory, isConfigured } from "../services/firebase";
 import { saveLocalFileBlob, deleteLocalFileBlob } from "../services/indexedDB";
 import { migrateGlobalToUser, migrateFromLocalStorage } from "../services/migration";
 import { extractYouTubeId, fetchYouTubeMeta, generateThumbnail, uid } from "../utils/helpers";
@@ -13,11 +13,12 @@ export function useVideos(user) {
   const colsRef = useRef(null);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || !isConfigured) {
       setVideos([]);
       setCategories([]);
       colsRef.current = null;
-      setSyncStatus("sign-in");
+      setSyncStatus(isConfigured ? "sign-in" : "error");
+      if (!isConfigured) setError("Firebase is not configured. Create a .env file with your Firebase credentials.");
       return;
     }
 
