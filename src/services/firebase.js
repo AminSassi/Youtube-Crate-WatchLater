@@ -9,11 +9,11 @@ import {
 } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY            || "AIzaSyBYfPbOJsIJBLNVAMiLqHQ4vU0dWxLcRJQ",
   authDomain:        "vidvault-7a0ee.firebaseapp.com",
-  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_SENDER_ID,
-  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID         || "vidvault-7a0ee",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_SENDER_ID          || "470180407124",
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID             || "1:470180407124:web:5f96f1d3a5f0f728c1cac1",
 };
 
 const isConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
