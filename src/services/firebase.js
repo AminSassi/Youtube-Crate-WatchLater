@@ -39,47 +39,64 @@ export function getUserCols(uid) {
 
 export function subscribeToUserData(uid, callbacks) {
   const { videosCol, catsCol } = getUserCols(uid);
-  const globalVideosCol = collection(db, "videos");
-  const globalCatsCol   = collection(db, "categories");
 
-  let userVids = [], globalVids = [], userCats = [], globalCats = [];
+  let userVids = [];
+  let userCats = [];
 
-  const merge = () => {
-    const allVids = [...globalVids];
-    userVids.forEach(v => { if (!allVids.find(x => x.id === v.id)) allVids.push(v); });
-    allVids.sort((a, b) => b.addedAt - a.addedAt);
-    const allCats = [...globalCats];
-    userCats.forEach(c => { if (!allCats.find(x => x.id === c.id)) allCats.push(c); });
-    callbacks.onChange(allVids, allCats);
+  const notify = () => {
+    const sortedVids = [...userVids].sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+    callbacks.onChange(sortedVids, [...userCats]);
   };
 
   const unsubUserVideos = onSnapshot(videosCol,
-    snap => { userVids = snap.docs.map(d => d.data()); merge(); },
-    err => { console.warn("user videos:", err); callbacks.onError(); }
+    snap => {
+      userVids = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+      notify();
+    },
+    err => {
+      console.warn("user videos error:", err);
+      callbacks.onError?.();
+    }
   );
-  const unsubGlobalVideos = onSnapshot(globalVideosCol,
-    snap => { globalVids = snap.docs.map(d => d.data()); merge(); },
-    err => { console.warn("global videos:", err); }
-  );
+
   const unsubUserCats = onSnapshot(catsCol,
-    snap => { userCats = snap.docs.map(d => d.data()); merge(); },
-    err => { console.warn("user cats:", err); callbacks.onError(); }
-  );
-  const unsubGlobalCats = onSnapshot(globalCatsCol,
-    snap => { globalCats = snap.docs.map(d => d.data()); merge(); },
-    err => { console.warn("global cats:", err); }
+    snap => {
+      userCats = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+      notify();
+    },
+    err => {
+      console.warn("user cats error:", err);
+      callbacks.onError?.();
+    }
   );
 
   return () => {
     unsubUserVideos();
-    unsubGlobalVideos();
     unsubUserCats();
-    unsubGlobalCats();
   };
 }
 
+function cleanData(obj) {
+  const clean = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) {
+      clean[k] = v;
+    }
+  }
+  return clean;
+}
+
 export async function saveVideo(videosCol, video) {
-  await setDoc(doc(videosCol, video.id), video);
+  const safeVideo = cleanData({
+    ...video,
+    watched: Boolean(video.watched),
+    priority: video.priority || "none",
+    categories: Array.isArray(video.categories) ? video.categories : [],
+    tags: Array.isArray(video.tags) ? video.tags : [],
+    note: video.note || "",
+    addedAt: video.addedAt || Date.now(),
+  });
+  await setDoc(doc(videosCol, video.id), safeVideo);
 }
 
 export async function removeVideo(videosCol, id) {
@@ -87,7 +104,12 @@ export async function removeVideo(videosCol, id) {
 }
 
 export async function saveCategory(catsCol, cat) {
-  await setDoc(doc(catsCol, cat.id), cat);
+  const safeCat = cleanData({
+    ...cat,
+    name: cat.name || "Untitled",
+    color: cat.color || "#7c6af7",
+  });
+  await setDoc(doc(catsCol, cat.id), safeCat);
 }
 
 export async function removeCategory(catsCol, id) {

@@ -12,8 +12,9 @@ export const VideoCard = memo(function VideoCard({
 }) {
   const isSocial = video.type === "instagram" || video.type === "facebook";
   const isLocal = video.type === "local";
-  const videoCats = categories.filter(c => video.categories.includes(c.id));
+  const videoCats = categories.filter(c => Array.isArray(video.categories) && video.categories.includes(c.id));
   const tabCfg = TABS[video.type] || TABS.youtube;
+  const tagsList = Array.isArray(video.tags) ? video.tags : [];
 
   return (
     <div
@@ -40,7 +41,7 @@ export const VideoCard = memo(function VideoCard({
             {isSocial ? <Icons.extLink /> : <Icons.play size={20} />}
           </div>
         </div>
-        {video.priority !== "none" && (
+        {video.priority && video.priority !== "none" && PRIORITIES[video.priority] && (
           <div style={{
             position: "absolute", top: 8, left: 8, background: PRIORITIES[video.priority].color,
             borderRadius: 5, padding: "2px 7px", fontSize: 9.5, fontWeight: 700, color: "white",
@@ -84,9 +85,9 @@ export const VideoCard = memo(function VideoCard({
           </div>
         )}
 
-        {video.tags.length > 0 && (
+        {tagsList.length > 0 && (
           <div className="row" style={{ marginBottom: 9 }}>
-            {video.tags.map(tag => (
+            {tagsList.map(tag => (
               <span key={tag} className="tag">
                 <Icons.tag />#{tag}
                 {isEditing && (

@@ -7,9 +7,16 @@ export const EditPanel = memo(function EditPanel({
 }) {
   const [tagInput, setTagInput] = useState("");
   const [thumbMsg, setThumbMsg] = useState("");
+  const [prevVideoNote, setPrevVideoNote] = useState(video.note);
+  const [noteText, setNoteText] = useState(video.note || "");
   const thumbTimerRef = useRef(null);
   const readerRef = useRef(null);
   const isSocial = video.type === "instagram" || video.type === "facebook";
+
+  if (video.note !== prevVideoNote) {
+    setPrevVideoNote(video.note);
+    setNoteText(video.note || "");
+  }
 
   useEffect(() => {
     return () => {
@@ -17,6 +24,12 @@ export const EditPanel = memo(function EditPanel({
       if (readerRef.current) readerRef.current.abort();
     };
   }, []);
+
+  const handleNoteBlur = useCallback(() => {
+    if (noteText !== (video.note || "")) {
+      onNote(noteText);
+    }
+  }, [noteText, video.note, onNote]);
 
   const commitTag = useCallback(() => {
     if (tagInput.trim()) { onAddTag(tagInput); setTagInput(""); }
@@ -120,7 +133,7 @@ export const EditPanel = memo(function EditPanel({
           <div style={{ fontSize: 10.5, color: "#40405a", marginBottom: 6 }}>Categories</div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             {categories.map(cat => {
-              const active = video.categories.includes(cat.id);
+              const active = Array.isArray(video.categories) && video.categories.includes(cat.id);
               return (
                 <button
                   key={cat.id}
@@ -146,7 +159,7 @@ export const EditPanel = memo(function EditPanel({
           <span style={{ fontSize: 11, color: "#40405a" }}>#</span>
           <input
             className="tag-inp"
-            placeholder="add tag, enter\u2026"
+            placeholder="add tag, enter…"
             value={tagInput}
             onChange={e => setTagInput(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); commitTag(); } }}
@@ -161,9 +174,10 @@ export const EditPanel = memo(function EditPanel({
         <textarea
           className="note-ta"
           rows={3}
-          placeholder="Key ideas, timestamps\u2026"
-          value={video.note}
-          onChange={e => onNote(e.target.value)}
+          placeholder="Key ideas, timestamps…"
+          value={noteText}
+          onChange={e => setNoteText(e.target.value)}
+          onBlur={handleNoteBlur}
           aria-label="Video notes"
         />
       </div>

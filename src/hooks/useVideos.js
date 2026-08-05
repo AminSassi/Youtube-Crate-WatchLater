@@ -126,19 +126,31 @@ export function useVideos(user) {
   }, [withSaving]);
 
   const deleteVideo = useCallback(async (video) => {
+    const prevVideos = videos;
+    setVideos(prev => prev.filter(v => v.id !== video.id));
     if (video.type === "local") {
       try { await deleteLocalFileBlob(video.id); } catch { /* local blob already gone */ }
     }
-    await withSaving(({ videosCol }) => removeVideo(videosCol, video.id));
-  }, [withSaving]);
+    try {
+      await withSaving(({ videosCol }) => removeVideo(videosCol, video.id));
+    } catch (err) {
+      console.warn("Delete video error:", err);
+      setVideos(prevVideos);
+    }
+  }, [videos, withSaving]);
 
   const updateVideo = useCallback(async (id, fields) => {
-    const video = videos.find(v => v.id === id);
-    if (!video) return;
+    let previousVideo = null;
+    setVideos(prev => prev.map(v => {
+      if (v.id === id) {
+        previousVideo = v;
+        return { ...v, ...fields };
+      }
+      return v;
+    }));
 
-    // Optimistic update: apply change immediately
-    const optimistic = { ...video, ...fields };
-    setVideos(prev => prev.map(v => v.id === id ? optimistic : v));
+    if (!previousVideo) return;
+    const optimistic = { ...previousVideo, ...fields };
 
     try {
       if (!colsRef.current) throw new Error("Not signed in");
@@ -148,7 +160,7 @@ export function useVideos(user) {
     } catch (err) {
       console.warn("Save error:", err);
       // Revert optimistic update
-      setVideos(prev => prev.map(v => v.id === id ? video : v));
+      setVideos(prev => prev.map(v => v.id === id ? previousVideo : v));
       setSyncStatus("error");
       if (err.code === "permission-denied") {
         setError("Permission denied. Check your Firebase security rules.");
@@ -156,44 +168,56 @@ export function useVideos(user) {
         setError("Couldn't save your changes. Check your connection and try again.");
       }
     }
-  }, [videos]);
+  }, []);
 
   const addCategory = useCallback(async (name) => {
     if (!name || categories.find(c => c.name.toLowerCase() === name.toLowerCase())) return;
-    const cat = { id: Date.now().toString(), name, color: categories.length % 8 === 0 ? "#7c6af7" : ["#7c6af7","#f97316","#06b6d4","#ec4899","#84cc16","#f59e0b","#8b5cf6","#10b981"][categories.length % 8] };
+    const cat = {
+      id: Date.now().toString(),
+      name,
+      color: ["#7c6af7","#f97316","#06b6d4","#ec4899","#84cc16","#f59e0b","#8b5cf6","#10b981"][categories.length % 8]
+    };
+    setCategories(prev => [...prev, cat]);
     await withSaving(({ catsCol }) => saveCategory(catsCol, cat));
   }, [categories, withSaving]);
 
   const deleteCategory = useCallback(async (id) => {
-    const affected = videos.filter(v => v.categories.includes(id));
+    setCategories(prev => prev.filter(c => c.id !== id));
+    const affected = videos.filter(v => v.categories && v.categories.includes(id));
     await withSaving(async ({ videosCol, catsCol }) => {
       await removeCategory(catsCol, id);
-      for (const v of affected) await saveVideo(videosCol, { ...v, categories: v.categories.filter(c => c !== id) });
+      for (const v of affected) {
+        await saveVideo(videosCol, { ...v, categories: (v.categories || []).filter(c => c !== id) });
+      }
     });
   }, [videos, withSaving]);
 
   const toggleVideoCategory = useCallback(async (vid, catId) => {
     const video = videos.find(v => v.id === vid);
     if (!video) return;
-    const cats = video.categories.includes(catId)
-      ? video.categories.filter(c => c !== catId)
-      : [...video.categories, catId];
-    await withSaving(({ videosCol }) => saveVideo(videosCol, { ...video, categories: cats }));
-  }, [videos, withSaving]);
+    const curCats = Array.isArray(video.categories) ? video.categories : [];
+    const cats = curCats.includes(catId)
+      ? curCats.filter(c => c !== catId)
+      : [...curCats, catId];
+    await updateVideo(vid, { categories: cats });
+  }, [videos, updateVideo]);
 
   const addTag = useCallback(async (vid, tag) => {
     const clean = tag.replace(/^#+/, "").trim().toLowerCase().replace(/\s+/g, "-");
     if (!clean) return;
     const video = videos.find(v => v.id === vid);
-    if (!video || video.tags.includes(clean)) return;
-    await withSaving(({ videosCol }) => saveVideo(videosCol, { ...video, tags: [...video.tags, clean] }));
-  }, [videos, withSaving]);
+    if (!video) return;
+    const curTags = Array.isArray(video.tags) ? video.tags : [];
+    if (curTags.includes(clean)) return;
+    await updateVideo(vid, { tags: [...curTags, clean] });
+  }, [videos, updateVideo]);
 
   const removeTag = useCallback(async (vid, tag) => {
     const video = videos.find(v => v.id === vid);
     if (!video) return;
-    await withSaving(({ videosCol }) => saveVideo(videosCol, { ...video, tags: video.tags.filter(t => t !== tag) }));
-  }, [videos, withSaving]);
+    const curTags = Array.isArray(video.tags) ? video.tags : [];
+    await updateVideo(vid, { tags: curTags.filter(t => t !== tag) });
+  }, [videos, updateVideo]);
 
   return {
     videos, categories, syncStatus, error, setError,
