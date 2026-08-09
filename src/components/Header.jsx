@@ -20,7 +20,7 @@ export const Header = memo(function Header({ syncStatus, user, videoCount, watch
           <div style={{
             fontFamily: "'Cabinet Grotesk',system-ui", fontWeight: 800, fontSize: 20,
             letterSpacing: "-0.4px",
-          }}>Video Vault</div>
+          }}>Video Vault <span style={{fontSize: "0.4em", opacity: 0.5}}>v2.0</span></div>
           <div style={{ fontSize: 10.5, color: "#30304a", marginTop: 1 }}>
             Synced across all your devices
           </div>
