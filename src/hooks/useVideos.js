@@ -53,12 +53,15 @@ export function useVideos(user) {
       console.warn("Save error:", err);
       setSyncStatus("error");
       if (err.code === "permission-denied") {
-        setError("Permission denied. Check your Firebase security rules.");
+        const msg = "Permission denied. Your Firebase security rules might have expired (Test Mode usually expires in 30 days). Please update them in the Firebase Console.";
+        setError(msg);
+        alert(msg);
       } else if (err.code === "unavailable") {
         setError("Service unavailable. Check your internet connection.");
       } else {
         setError("Couldn't save your changes. Check your connection and try again.");
       }
+      throw err;
     }
   }, []);
 
